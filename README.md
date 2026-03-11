@@ -3,6 +3,15 @@
 # Card utilities
 #
 
+> **Security warning:** PMCC is **not** secure key storage.  Card images
+> contain raw key material; anyone who obtains the file or a dumped card can
+> copy the bytes and attempt to brute force the key password.  
+> Treat cards and images as sensitive data and store them off‑system.
+> This tool provides convenience operations for
+> working with the key material but does **not** protect it against theft or
+> extraction.
+
+
 Utilities for building and working with SLE‑series smart‑card images (SLE4442,
 SLE4428, SLE5528 and similar).  This repository is a collection of standalone
 command‑line helpers together with supporting Python modules for card
