@@ -440,8 +440,7 @@ def cmd_encrypt(args):
                 ]
                 if vals:
                     target = "_".join(vals[:2]) + "_Pubkey.pem"
-                else:
-                    target = None
+                    # try to locate a matching saved key
                     for c in existing:
                         if c.name == target:
                             pub = c.read_bytes()
@@ -449,7 +448,7 @@ def cmd_encrypt(args):
                     if pub is None:
                         # found saved keys but none matched metadata
                         print(
-                            f"warning: no saved public key matches card metadata {first} {last}; using card directly",
+                            "warning: no saved public key matches card metadata; using card directly",
                             file=sys.stderr,
                         )
                 else:
