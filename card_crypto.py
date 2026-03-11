@@ -233,10 +233,15 @@ def cmd_extract_public(args):
     # compute output path based on metadata; ignore any provided value
     PMCC_HOME.mkdir(parents=True, exist_ok=True, mode=0o700)
     md = _parse_metadata(img)
-    first = _sanitize_filename_component(md.get("First", "").strip())
-    last = _sanitize_filename_component(md.get("Last", "").strip())
-    if first or last:
-        name = f"{first}_{last}_Pubkey.pem"
+    # construct name from first two non-empty metadata values (in order);
+    # this works even if field names change via metadata_fields.json
+    vals = [
+        _sanitize_filename_component(v.strip())
+        for v in md.values()
+        if v and v.strip()
+    ]
+    if vals:
+        name = "_".join(vals[:2]) + "_Pubkey.pem"
     else:
         name = "public.pem"
     args.output = str(PMCC_HOME / name)
@@ -427,10 +432,16 @@ def cmd_encrypt(args):
                 rdr = _parse_reader_arg(getattr(args, "reader", None))
                 img = read_image_from_card(reader=rdr, manager=getattr(args, "manager", None))
                 md = _parse_metadata(img)
-                first = _sanitize_filename_component(md.get("First", "").strip())
-                last = _sanitize_filename_component(md.get("Last", "").strip())
-                if first or last:
-                    target = f"{first}_{last}_Pubkey.pem"
+                # adapt same generic naming used in extract-public
+                vals = [
+                    _sanitize_filename_component(v.strip())
+                    for v in md.values()
+                    if v and v.strip()
+                ]
+                if vals:
+                    target = "_".join(vals[:2]) + "_Pubkey.pem"
+                else:
+                    target = None
                     for c in existing:
                         if c.name == target:
                             pub = c.read_bytes()

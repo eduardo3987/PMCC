@@ -180,7 +180,8 @@ memory layout assumed by this utility is:
 Supported commands:
 
 - `extract-public` – dump public key to a PEM file (automatically saved to
-  `~/.pmcc` using card metadata for the filename).
+  `~/.pmcc` using the first two metadata values for the filename; this makes
+  the naming scheme independent of the actual field names).
 - `sign` / `verify` – Ed25519 signing and verification.  Signing defaults to
   producing a `.sig` file next to the input (see help for details).  If
   verification fails the tool now prints diagnostic information
