@@ -42,6 +42,12 @@ import sys
 import getpass
 from pathlib import Path
 import tempfile
+import re
+
+
+def _sanitize_filename_component(s: str) -> str:
+    # restrict automatically generated names to a safe subset
+    return re.sub(r"[^A-Za-z0-9_-]", "_", s)
 
 
 def parse_args():
@@ -72,8 +78,11 @@ def parse_args():
 
 
 def read_header(blank_path: str, size: int = 0x20) -> bytes:
-    with open(blank_path, "rb") as f:
-        data = f.read()
+    try:
+        with open(blank_path, "rb") as f:
+            data = f.read()
+    except OSError as e:
+        raise FileNotFoundError(f"cannot open blank dump '{blank_path}': {e}")
     if len(data) < size:
         raise ValueError(f"blank dump is only {len(data)} bytes long")
     return data[:size]
@@ -84,7 +93,11 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 
 def load_file(path: str, expected: int = None) -> bytes:
-    data = open(path, "rb").read()
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError as e:
+        raise FileNotFoundError(f"cannot open file '{path}': {e}")
     if expected is None:
         return data
     if len(data) == expected:
@@ -130,30 +143,43 @@ def build_metadata(args) -> bytes:
     return b
 
 
-def _encrypt_seed(seed: bytes, password: str) -> bytes:
-    # derive key by simple SHA256 of password for AES-256
-    from cryptography.hazmat.primitives import hashes, padding
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-    from cryptography.hazmat.backends import default_backend
+# constants matching card_crypto.py
+SALT_LEN = 4            # bytes of salt stored alongside blob
+NONCE_LEN = 12          # AESGCM nonce
+PBKDF2_ITERS = 100_000
 
-    key = hashes.Hash(hashes.SHA256(), backend=default_backend())
-    key.update(password.encode())
-    key_bytes = key.finalize()
-    iv = os.urandom(16)
-    # pad seed to block size
-    padder = padding.PKCS7(128).padder()
-    padded = padder.update(seed) + padder.finalize()
-    cipher = Cipher(algorithms.AES(key_bytes), modes.CBC(iv), default_backend())
-    encryptor = cipher.encryptor()
-    ct = encryptor.update(padded) + encryptor.finalize()
-    return iv + ct
+
+def _derive_key(password: str, salt: bytes) -> bytes:
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=PBKDF2_ITERS,
+    )
+    return kdf.derive(password.encode())
+
+
+def _encrypt_seed(seed: bytes, password: str) -> bytes:
+    # format: salt||nonce||ciphertext(tag appended)
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    salt = os.urandom(SALT_LEN)
+    key = _derive_key(password, salt)
+    nonce = os.urandom(NONCE_LEN)
+    aesgcm = AESGCM(key)
+    ct = aesgcm.encrypt(nonce, seed, None)
+    out = salt + nonce + ct
+    if len(out) > 0x40:
+        raise ValueError("encrypted seed too large to fit in 64 bytes")
+    return out
 
 
 def _normalize_private(data: bytes, password: str | None = None) -> bytes:
     """Return bytes suitable for storage in card region (<=64).
 
     If input is DER it will be converted to raw seed.  If a password is
-    supplied the seed will be encrypted with AES-CBC (key=SHA256(pass)).
+    supplied the seed will be encrypted with the AEAD/PBKDF2 scheme above.
     """
     # try parse as DER
     try:
@@ -168,8 +194,6 @@ def _normalize_private(data: bytes, password: str | None = None) -> bytes:
         seed = data
     if password:
         encrypted = _encrypt_seed(seed, password)
-        if len(encrypted) > 0x40:
-            raise ValueError("encrypted seed too large to fit in 64 bytes")
         return encrypted
     else:
         if len(seed) > 0x40:
@@ -210,9 +234,13 @@ def main() -> None:
             save = input("save generated keys to files? [y/N]: ")
             if save.lower().startswith("y"):
                 ppath = input("private key filename [private.der]: ").strip() or "private.der"
-                open(ppath, "wb").write(priv_store)
+                with open(ppath, "wb") as f:
+                    f.write(priv_store)
+                    os.fchmod(f.fileno(), 0o600)
                 qpath = input("public key filename [public.raw]: ").strip() or "public.raw"
-                open(qpath, "wb").write(pub_bytes)
+                with open(qpath, "wb") as f:
+                    f.write(pub_bytes)
+                    os.fchmod(f.fileno(), 0o644)
                 print(f"keys written to {ppath} and {qpath}")
         else:
             raw = load_file(args.priv)
@@ -256,8 +284,8 @@ def main() -> None:
 
     # decide output filename if not supplied
     if not args.output:
-        first = md.get("First", "").strip().replace(" ", "_")
-        last = md.get("Last", "").strip().replace(" ", "_")
+        first = _sanitize_filename_component(md.get("First", "").strip())
+        last = _sanitize_filename_component(md.get("Last", "").strip())
         base = "".join([first, "_", last, "_card"]) if (first or last) else "card_image"
         args.output = base + ".bin"
     # use temporary directory to build file then move
@@ -277,10 +305,12 @@ def main() -> None:
 
         with open(temp_path, "wb") as f:
             f.write(img)
+            os.fchmod(f.fileno(), 0o600)
         print(f"wrote image ({len(img)} bytes) to temporary {temp_path}")
         # move into place
         import shutil
         shutil.move(str(temp_path), args.output)
+        os.chmod(args.output, 0o600)
         print(f"moved image to {args.output}")
     # end of temporary directory block
     # end of temporary directory block
@@ -294,6 +324,7 @@ def main() -> None:
         pm_path = os.path.splitext(args.output)[0] + "_pm.bin"
         with open(pm_path, "wb") as f:
             f.write(pm)
+            os.fchmod(f.fileno(), 0o600)
         print(f"wrote protection map ({len(pm)} bytes) to {pm_path}")
 
 

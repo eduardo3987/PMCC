@@ -42,7 +42,8 @@ from drivers.sle5528 import SLE5528
 
 # home directory for the utility
 PMCC_HOME = Path.home() / ".pmcc"
-PMCC_HOME.mkdir(exist_ok=True)
+# create home directory with restrictive permissions
+PMCC_HOME.mkdir(mode=0o700, exist_ok=True)
 
 try:
     from nacl.public import SealedBox, PublicKey, PrivateKey
@@ -61,7 +62,11 @@ PAGE_PUB_LEN = 0x20
 
 
 def read_image(path: str) -> bytes:
-    return open(path, "rb").read()
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError as e:
+        raise FileNotFoundError(f"cannot open image file '{path}': {e}")
 
 
 def read_image_from_card() -> bytes:
@@ -76,12 +81,14 @@ def read_image_from_card() -> bytes:
         CardType.SLE5528: SLE5528,
     }.get(ctype)
     if not driver_cls:
-        raise Exception(f"unsupported card type {ctype}")
+        raise ValueError(f"unsupported card type {ctype}")
     card = driver_cls(conn=mgr.conn)
     data = card.read_all()
+    if not data or len(data) not in (256, 1024):
+        raise ValueError("card read returned unexpected length")
     img = bytes(data)
     # write a temporary copy for debugging; it will be cleaned up
-    with tempfile.TemporaryDirectory() as td:
+    with tempfile.TemporaryDirectory(mode=0o700) as td:
         tmpf = Path(td) / "card_image.bin"
         tmpf.write_bytes(img)
         # leave directory immediately, file will be removed
@@ -98,23 +105,50 @@ def extract_private_der(img: bytes) -> bytes:
     return priv.rstrip(b"\x00").rstrip(b"\xFF")
 
 
-def _decrypt_seed(data: bytes, password: bytes) -> bytes:
-    # same scheme as make_card_image: key=SHA256(password), iv=first16
-    from cryptography.hazmat.primitives import hashes, padding
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-    from cryptography.hazmat.backends import default_backend
+# constants for the redesigned encrypted format
+SALT_LEN = 4            # bytes of random salt stored with data
+NONCE_LEN = 12          # AESGCM nonce
+PBKDF2_ITERS = 100_000  # work factor: adjust based on your env
 
-    iv = data[:16]
-    ct = data[16:]
-    key = hashes.Hash(hashes.SHA256(), backend=default_backend())
-    key.update(password)
-    key_bytes = key.finalize()
-    cipher = Cipher(algorithms.AES(key_bytes), modes.CBC(iv), default_backend())
-    decryptor = cipher.decryptor()
-    padded = decryptor.update(ct) + decryptor.finalize()
-    unpadder = padding.PKCS7(128).unpadder()
-    seed = unpadder.update(padded) + unpadder.finalize()
-    return seed
+
+def _derive_key(password: bytes, salt: bytes) -> bytes:
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=PBKDF2_ITERS,
+    )
+    return kdf.derive(password)
+
+
+def _encrypt_seed(seed: bytes, password: bytes) -> bytes:
+    # format: salt||nonce||ciphertext(tag appended)
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    salt = os.urandom(SALT_LEN)
+    key = _derive_key(password, salt)
+    nonce = os.urandom(NONCE_LEN)
+    aesgcm = AESGCM(key)
+    ct = aesgcm.encrypt(nonce, seed, None)
+    out = salt + nonce + ct
+    if len(out) > PAGE_PRIV_LEN:
+        raise ValueError("encrypted seed too large to fit in card region")
+    return out
+
+
+def _decrypt_seed(data: bytes, password: bytes) -> bytes:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    # strip padding/ff that may have been added by image builder
+    data = data.rstrip(b"\x00").rstrip(b"\xFF")
+    if len(data) < SALT_LEN + NONCE_LEN + 1:
+        raise ValueError("encrypted blob too short")
+    salt = data[:SALT_LEN]
+    nonce = data[SALT_LEN:SALT_LEN+NONCE_LEN]
+    ct = data[SALT_LEN+NONCE_LEN:]
+    key = _derive_key(password, salt)
+    aesgcm = AESGCM(key)
+    return aesgcm.decrypt(nonce, ct, None)
 
 
 def load_private(der_or_seed: bytes, password: bytes | None):
@@ -123,26 +157,22 @@ def load_private(der_or_seed: bytes, password: bytes | None):
     The input may be:
     * a PKCS#8 DER blob (encrypted or not), or
     * a raw 32-byte seed, optionally encrypted with password using the
-      simple AES-CBC scheme used by make_card_image.
+      AES-GCM/PBKDF2 scheme used by make_card_image.
     """
     # first try DER
     try:
         return serialization.load_der_private_key(der_or_seed, password=password)
-    except Exception:
+    except (ValueError, TypeError):
+        # not a DER private key
         pass
     # not DER; treat as raw or encrypted seed
+    seed = der_or_seed
     if password:
         try:
             seed = _decrypt_seed(der_or_seed, password)
         except Exception as e:
-            # if padding invalid, assume data was not encrypted and use raw
-            msg = str(e).lower()
-            if "padding" in msg:
-                seed = der_or_seed
-            else:
-                raise ValueError(f"failed to decrypt seed: {e}")
-    else:
-        seed = der_or_seed
+            raise ValueError(f"failed to decrypt seed: {e}")
+    # final length check
     if len(seed) != 32:
         raise ValueError("private seed has incorrect length")
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -172,10 +202,10 @@ def cmd_extract_public(args):
     pub = extract_public(img)
     # apply default output using metadata
     if not args.output:
-        PMCC_HOME.mkdir(parents=True, exist_ok=True)
+        PMCC_HOME.mkdir(parents=True, exist_ok=True, mode=0o700)
         md = _parse_metadata(img)
-        first = md.get("First", "").strip().replace(" ", "_")
-        last = md.get("Last", "").strip().replace(" ", "_")
+        first = _sanitize_filename_component(md.get("First", "").strip())
+        last = _sanitize_filename_component(md.get("Last", "").strip())
         if first or last:
             name = f"{first}_{last}_Pubkey.pem"
         else:
@@ -187,7 +217,9 @@ def cmd_extract_public(args):
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
     )
-    open(args.output, "wb").write(pem)
+    with open(args.output, "wb") as f:
+        os.fchmod(f.fileno(), 0o600)
+        f.write(pem)
     print(f"wrote public key PEM ({len(pem)} bytes) to {args.output}", file=sys.stderr)
 
 
@@ -216,7 +248,7 @@ def cmd_dump_private(args):
         sys.exit(1)
     # default output
     if not args.output:
-        PMCC_HOME.mkdir(parents=True, exist_ok=True)
+        PMCC_HOME.mkdir(parents=True, exist_ok=True, mode=0o700)
         fname = "private.pem" if args.pem else ("private_raw.bin" if args.raw else "private.der")
         args.output = str(PMCC_HOME / fname)
     if args.raw:
@@ -229,7 +261,9 @@ def cmd_dump_private(args):
         if args.output == "-":
             sys.stdout.buffer.write(seed)
         else:
-            open(args.output, "wb").write(seed)
+            with open(args.output, "wb") as f:
+                os.fchmod(f.fileno(), 0o600)
+                f.write(seed)
         print(f"wrote raw private seed ({len(seed)} bytes) to {args.output}", file=sys.stderr)
     elif args.pem:
         pem = priv.private_bytes(
@@ -240,13 +274,17 @@ def cmd_dump_private(args):
         if args.output == "-":
             sys.stdout.buffer.write(pem)
         else:
-            open(args.output, "wb").write(pem)
+            with open(args.output, "wb") as f:
+                os.fchmod(f.fileno(), 0o600)
+                f.write(pem)
         print(f"wrote PEM private key ({len(pem)} bytes) to {args.output}", file=sys.stderr)
     else:
         if args.output == "-":
             sys.stdout.buffer.write(der)
         else:
-            open(args.output, "wb").write(der)
+            with open(args.output, "wb") as f:
+                os.fchmod(f.fileno(), 0o600)
+                f.write(der)
         print(f"wrote DER private key ({len(der)} bytes) to {args.output}", file=sys.stderr)
 
 
@@ -276,18 +314,40 @@ def cmd_sign(args):
     data = open(args.input, "rb").read()
     sig = priv.sign(data)
     if not args.output:
-        PMCC_HOME.mkdir(parents=True, exist_ok=True)
+        PMCC_HOME.mkdir(parents=True, exist_ok=True, mode=0o700)
         args.output = str(PMCC_HOME / "signature.sig")
     if args.output == "-":
         sys.stdout.buffer.write(sig)
     else:
-        open(args.output, "wb").write(sig)
+        with open(args.output, "wb") as f:
+            os.fchmod(f.fileno(), 0o600)
+            f.write(sig)
     print(f"signature ({len(sig)} bytes) written to {args.output}", file=sys.stderr)
 
 
 def cmd_verify(args):
     pub = open(args.pubkey, "rb").read()
-    pk = Ed25519PublicKey.from_public_bytes(pub)
+    from cryptography.hazmat.primitives.serialization import (
+        load_pem_public_key,
+        load_der_public_key,
+    )
+    pk = None
+    if len(pub) == 32:
+        pk = Ed25519PublicKey.from_public_bytes(pub)
+    else:
+        # try PEM/DER
+        try:
+            keyobj = load_pem_public_key(pub)
+        except Exception:
+            try:
+                keyobj = load_der_public_key(pub)
+            except Exception:
+                keyobj = None
+        if keyobj is not None:
+            pk = keyobj
+    if pk is None:
+        print("unable to parse public key", file=sys.stderr)
+        sys.exit(1)
     data = open(args.input, "rb").read()
     sig = open(args.sig, "rb").read()
     try:
@@ -327,8 +387,8 @@ def cmd_encrypt(args):
             try:
                 img = read_image_from_card()
                 md = _parse_metadata(img)
-                first = md.get("First", "").strip().replace(" ", "_")
-                last = md.get("Last", "").strip().replace(" ", "_")
+                first = _sanitize_filename_component(md.get("First", "").strip())
+                last = _sanitize_filename_component(md.get("Last", "").strip())
                 if first or last:
                     target = f"{first}_{last}_Pubkey.pem"
                     for c in existing:
@@ -398,6 +458,7 @@ def cmd_encrypt(args):
         sys.stdout.write(arm_text)
     else:
         with open(args.output, "w") as f:
+            os.fchmod(f.fileno(), 0o600)
             f.write(arm_text)
     print(f"encrypted {len(data)} bytes to {args.output} (ascii armored)", file=sys.stderr)
 
@@ -468,7 +529,10 @@ def cmd_decrypt(args):
             b64s += "=" * (4 - (len(b64s) % 4))
         cipher = base64.b64decode(b64s)
         if fname and not args.output:
-            PMCC_HOME.mkdir(parents=True, exist_ok=True)
+            # avoid directory traversal and illegal characters
+            fname = os.path.basename(fname)
+            fname = _sanitize_filename_component(fname)
+            PMCC_HOME.mkdir(parents=True, exist_ok=True, mode=0o700)
             args.output = str(PMCC_HOME / fname)
     else:
         cipher = raw
@@ -478,13 +542,22 @@ def cmd_decrypt(args):
         print(f"decryption failed: {e}", file=sys.stderr)
         sys.exit(1)
     if not args.output:
-        PMCC_HOME.mkdir(parents=True, exist_ok=True)
+        PMCC_HOME.mkdir(parents=True, exist_ok=True, mode=0o700)
         args.output = str(PMCC_HOME / "decrypted.bin")
     if args.output == "-":
         sys.stdout.buffer.write(pt)
     else:
-        open(args.output, "wb").write(pt)
+        with open(args.output, "wb") as f:
+            os.fchmod(f.fileno(), 0o600)
+            f.write(pt)
     print(f"decrypted to {args.output} ({len(pt)} bytes)", file=sys.stderr)
+
+
+def _sanitize_filename_component(s: str) -> str:
+    # allow only a conservative set of characters in automatically generated
+    # filenames to prevent path traversal and shell surprises.
+    import re
+    return re.sub(r"[^A-Za-z0-9_-]", "_", s)
 
 
 def main():
