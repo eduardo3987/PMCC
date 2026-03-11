@@ -38,9 +38,16 @@ it.
 
 ## Usage
 
+> **Security note:** passwords are passed interactively and are not stored;
+> the card image format uses 64 bytes for the encrypted seed and includes a
+> small random salt/nonce/tag.  Always keep your `~/.pmcc` directory private.
+
 Most helpers are invoked directly from the command line.  For convenience the
 scripts are made executable and contain a shebang so they can be run as
-`./card_crypto.py` etc.
+`./card_crypto.py` etc.  The tools now encrypt private material with a
+password-derived key (PBKDF2) and AES‑GCM, and they sanitize any metadata before
+using it in automatically generated filenames.  Generated files are created
+with restrictive (600/700) permissions by default.
 
 ### make_card_image.py
 
