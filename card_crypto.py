@@ -69,9 +69,20 @@ def read_image(path: str) -> bytes:
         raise FileNotFoundError(f"cannot open image file '{path}': {e}")
 
 
-def read_image_from_card() -> bytes:
-    mgr = PCSCManager()
-    mgr.connect()
+def read_image_from_card(reader=None, manager: PCSCManager | None = None) -> bytes:
+    """Read the 256/1024‑byte card image from a connected card.
+
+    *reader* may be either a reader object (as returned by
+    ``smartcard.System.readers()``) or a string matching ``str(r)``; it is
+    passed through to ``PCSCManager.connect``.  If *manager* is provided it
+    will be used and assumed to already have a connection open; otherwise a
+    new ``PCSCManager`` is created internally.  The return value is the raw
+    bytes read from the card.
+    """
+    mgr = manager if manager is not None else PCSCManager()
+    # if we weren't given an already-open connection, connect now
+    if mgr.conn is None:
+        mgr.connect(reader=reader)
     atr = mgr.get_atr()
     ctype = ATRDetector.detect(atr, mgr.conn)
     driver_cls = {
@@ -87,8 +98,11 @@ def read_image_from_card() -> bytes:
     if not data or len(data) not in (256, 1024):
         raise ValueError("card read returned unexpected length")
     img = bytes(data)
-    # write a temporary copy for debugging; it will be cleaned up
-    with tempfile.TemporaryDirectory(mode=0o700) as td:
+    # write a temporary copy for debugging; it will be cleaned up.  We can't
+    # specify a mode to TemporaryDirectory (not supported by the stdlib), so
+    # create it then fix perms if we care; the directory is ephemeral anyway.
+    with tempfile.TemporaryDirectory() as td:
+        os.chmod(td, 0o700)
         tmpf = Path(td) / "card_image.bin"
         tmpf.write_bytes(img)
         # leave directory immediately, file will be removed
@@ -194,23 +208,38 @@ def _parse_metadata(img: bytes) -> dict:
     return md
 
 
+def _parse_reader_arg(reader_str: str | None):
+    """Return a reader object matching the given string.
+
+    ``PCSCManager.list_readers`` is used to enumerate available readers; the
+    first one whose ``str()`` matches *reader_str* is returned.  ``None`` is
+    returned if *reader_str* is falsy.
+    """
+    if not reader_str:
+        return None
+    mgr = PCSCManager()
+    for r in mgr.list_readers():
+        if str(r) == reader_str or reader_str in str(r):
+            return r
+    raise ValueError(f"reader '{reader_str}' not found")
+
+
+
 def cmd_extract_public(args):
-    if args.card_image:
-        img = read_image(args.card_image)
-    else:
-        img = read_image_from_card()
+    # always read from a connected card
+    rdr = _parse_reader_arg(getattr(args, "reader", None))
+    img = read_image_from_card(reader=rdr, manager=getattr(args, "manager", None))
     pub = extract_public(img)
-    # apply default output using metadata
-    if not args.output:
-        PMCC_HOME.mkdir(parents=True, exist_ok=True, mode=0o700)
-        md = _parse_metadata(img)
-        first = _sanitize_filename_component(md.get("First", "").strip())
-        last = _sanitize_filename_component(md.get("Last", "").strip())
-        if first or last:
-            name = f"{first}_{last}_Pubkey.pem"
-        else:
-            name = "public.pem"
-        args.output = str(PMCC_HOME / name)
+    # compute output path based on metadata; ignore any provided value
+    PMCC_HOME.mkdir(parents=True, exist_ok=True, mode=0o700)
+    md = _parse_metadata(img)
+    first = _sanitize_filename_component(md.get("First", "").strip())
+    last = _sanitize_filename_component(md.get("Last", "").strip())
+    if first or last:
+        name = f"{first}_{last}_Pubkey.pem"
+    else:
+        name = "public.pem"
+    args.output = str(PMCC_HOME / name)
     # dump as PEM
     keyobj = Ed25519PublicKey.from_public_bytes(pub)
     pem = keyobj.public_bytes(
@@ -224,10 +253,9 @@ def cmd_extract_public(args):
 
 
 def cmd_dump_private(args):
-    if args.card_image:
-        img = read_image(args.card_image)
-    else:
-        img = read_image_from_card()
+    # not accessible via CLI; kept for potential internal use
+    rdr = _parse_reader_arg(getattr(args, "reader", None))
+    img = read_image_from_card(reader=rdr, manager=getattr(args, "manager", None))
     der = extract_private_der(img)
     if not der:
         print("no private key data found", file=sys.stderr)
@@ -289,10 +317,8 @@ def cmd_dump_private(args):
 
 
 def cmd_sign(args):
-    if args.card_image:
-        img = read_image(args.card_image)
-    else:
-        img = read_image_from_card()
+    rdr = _parse_reader_arg(getattr(args, "reader", None))
+    img = read_image_from_card(reader=rdr, manager=getattr(args, "manager", None))
     der = extract_private_der(img)
     if not der:
         print("no private key data found", file=sys.stderr)
@@ -314,8 +340,9 @@ def cmd_sign(args):
     data = open(args.input, "rb").read()
     sig = priv.sign(data)
     if not args.output:
-        PMCC_HOME.mkdir(parents=True, exist_ok=True, mode=0o700)
-        args.output = str(PMCC_HOME / "signature.sig")
+        # default signature file lives beside the input file with ".sig" appended
+        inp = Path(args.input)
+        args.output = str(inp.parent / (inp.name + ".sig"))
     if args.output == "-":
         sys.stdout.buffer.write(sig)
     else:
@@ -354,7 +381,19 @@ def cmd_verify(args):
         pk.verify(sig, data)
         print("signature OK")
     except Exception as e:
-        print(f"verification failed: {e}")
+        # diagnostics to help determine why a supposedly-valid signature
+        # failed (length mismatch, corrupted file, wrong key, etc.)
+        msg = str(e)
+        if msg:
+            print(f"verification failed: {msg}")
+        else:
+            # cryptography sometimes raises InvalidSignature with no text
+            print("verification failed: signature did not verify")
+        # also show lengths so callers can spot common problems
+        try:
+            print(f"pub len={len(pub)} data len={len(data)} sig len={len(sig)}")
+        except Exception:
+            pass
         sys.exit(1)
 
 
@@ -385,7 +424,8 @@ def cmd_encrypt(args):
         if existing:
             # read metadata once if needed
             try:
-                img = read_image_from_card()
+                rdr = _parse_reader_arg(getattr(args, "reader", None))
+                img = read_image_from_card(reader=rdr, manager=getattr(args, "manager", None))
                 md = _parse_metadata(img)
                 first = _sanitize_filename_component(md.get("First", "").strip())
                 last = _sanitize_filename_component(md.get("Last", "").strip())
@@ -410,7 +450,8 @@ def cmd_encrypt(args):
         if pub is None:
             # no files available or mismatch forced using card
             if img is None:
-                img = read_image_from_card()
+                rdr = _parse_reader_arg(getattr(args, "reader", None))
+                img = read_image_from_card(reader=rdr, manager=getattr(args, "manager", None))
             pub = extract_public(img)
 
     # ensure pub is raw 32 bytes; try to parse PEM/DER if not
@@ -467,10 +508,8 @@ def cmd_decrypt(args):
     if SealedBox is None:
         print("PyNaCl required for encryption/decryption", file=sys.stderr)
         sys.exit(1)
-    if args.card_image:
-        img = read_image(args.card_image)
-    else:
-        img = read_image_from_card()
+    rdr = _parse_reader_arg(getattr(args, "reader", None))
+    img = read_image_from_card(reader=rdr, manager=getattr(args, "manager", None))
     der = extract_private_der(img)
     if not der:
         print("no private key data found", file=sys.stderr)
@@ -565,23 +604,19 @@ def main():
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("extract-public")
-    p.add_argument("--card-image", help="path to card image file (omit to read from PC/SC)")
-    p.add_argument("-o","--output", help="output filename (default: ~/.pmcc/public.pem; use '-' for stdout)")
+    p.add_argument("--reader", help="PC/SC reader to use when communicating with a card")
     p.add_argument("--pem", action="store_true", help="return PEM (default)")
     p.set_defaults(func=cmd_extract_public)
 
-    p = sub.add_parser("dump-private")
-    p.add_argument("--card-image", help="path to card image file (omit to read from PC/SC)")
-    p.add_argument("-o","--output", help="output filename (default: ~/.pmcc/private.pem or .der; '-'=stdout)")
-    p.add_argument("--password", help="key password (prompt if omitted)")
-    p.add_argument("--raw", action="store_true", help="output raw seed instead of DER")
-    p.add_argument("--pem", action="store_true", help="output PEM-formatted PKCS8 key instead of DER")
-    p.set_defaults(func=cmd_dump_private)
+    # the dump-private command has been removed by policy; private key
+    # extraction is no longer supported via this tool.
+    # p = sub.add_parser("dump-private")
+    # ... (not registered)
 
     p = sub.add_parser("sign")
-    p.add_argument("--card-image", help="path to card image file (omit to read from PC/SC)")
+    p.add_argument("--reader", help="PC/SC reader to use when communicating with a card")
     p.add_argument("--input", required=True)
-    p.add_argument("-o","--output", help="output filename (default: ~/.pmcc/signature.sig; '-'=stdout)")
+    p.add_argument("-o","--output", help="output filename (default: <input>.sig in same directory; '-'=stdout)")
     p.add_argument("--password", help="key password (prompt if omitted)")
     p.set_defaults(func=cmd_sign)
 
@@ -593,12 +628,13 @@ def main():
 
     p = sub.add_parser("encrypt")
     p.add_argument("--pubkey", help="public key file (PEM/DER). omit to read from card")
+    p.add_argument("--reader", help="PC/SC reader to use when communicating with a card (when pubkey omitted)")
     p.add_argument("--input", required=True)
     p.add_argument("-o","--output", help="output filename (default: ./encrypted.txt; '-'=stdout)")
     p.set_defaults(func=cmd_encrypt)
 
     p = sub.add_parser("decrypt")
-    p.add_argument("--card-image", help="path to card image file (omit to read from PC/SC)")
+    p.add_argument("--reader", help="PC/SC reader to use when communicating with a card")
     p.add_argument("--input", required=True)
     p.add_argument("-o","--output", help="output filename (default: ~/.pmcc/decrypted.bin; '-'=stdout)")
     p.add_argument("--password", help="key password (prompt if omitted)")

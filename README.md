@@ -54,10 +54,12 @@ it.
 
 Most helpers are invoked directly from the command line.  For convenience the
 scripts are made executable and contain a shebang so they can be run as
-`./card_crypto.py` etc.  The tools now encrypt private material with a
-password-derived key (PBKDF2) and AES‑GCM, and they sanitize any metadata before
-using it in automatically generated filenames.  Generated files are created
-with restrictive (600/700) permissions by default.
+`./card_crypto.py` etc.  The crypto utility now only operates against a live
+reader; using a card image file is no longer supported.  The public key
+extract command automatically saves output into `~/.pmcc/` with a filename
+derived from the card's metadata.  The ability to dump the private key has
+been removed.  Generated files are created with restrictive (600/700)
+permissions by default.
 
 ### make_card_image.py
 
@@ -67,22 +69,50 @@ script builds a 256‑byte image (SLE4442); pass `--type sle4428` to generate a
 
 ### GUI front end
 
-For users who prefer a graphical interface the project includes a simple Qt-
-based front end built with PySide6.  Launch it with:
+For users who prefer a graphical interface the project includes a couple of
+simple Qt‑based front ends built with PySide6.
 
-```sh
-python make_card_image_gui.py
-```
+* **Image maker** – launch it with:
 
-The window allows you to select the blank dump and key files (or generate a
-fresh key pair and save the resulting private/public data via the provided
-buttons).  Metadata fields are presented individually according to
-`metadata_fields.json`, so you simply fill in each value rather than typing
-freeform text.  The output filename will default to `card_image_<YYYYMMDD>.bin`
-(or include the name fields if provided) and updates automatically as you
-edit metadata.  You can override it by typing a custom name.  Toggle the
-protection map option as needed.  Status messages appear in the log area at
-the bottom of the window.
+  ```sh
+  python make_card_image_gui.py
+  ```
+
+  The window allows you to select the blank dump and key files (or generate a
+  fresh key pair and save the resulting private/public data via the provided
+  buttons).  Metadata fields are presented individually according to
+  `metadata_fields.json`, so you simply fill in each value rather than typing
+  freeform text.  The output filename will default to
+  `card_image_<YYYYMMDD>.bin` (or include the name fields if provided) and
+  updates automatically as you edit metadata.  You can override it by typing a
+  custom name.  Toggle the protection map option as needed.  Status messages
+  appear in the log area at the bottom of the window.
+
+* **Crypto operations** – a companion interface is available for
+  `card_crypto.py`.  Start it with:
+
+  ```sh
+  python card_crypto_gui.py
+  ```
+
+  When the window opens it immediately scans for available PC/SC readers and
+  attempts to connect to the first one it finds.  You can later press *Scan
+  readers* again, pick a different reader from the list and hit *Connect*, or
+  disconnect entirely.  Card image files are not supported.
+
+  The dropdown exposes the remaining commands (`extract-public`,
+  `sign`, `verify`, `encrypt`, `decrypt`).
+
+  * **Sign** – choose an input file; the signature will be written beside it
+    with a `.sig` suffix and the GUI shows the auto‑chosen path.
+  * **Verify** – select a public key from the pulldown list populated from
+    `~/.pmcc` (refresh the list if you add new keys).  The field is editable
+    so you may also type or paste a path to any other key file.
+  * **Extract-public** – saves automatically to `~/.pmcc` using metadata
+    from the card; no filename entry is required.
+
+  Output and error messages (including "signature OK" or verification
+  diagnostics) are written to the log pane.
 
 ### Command-line examples
 
@@ -128,7 +158,7 @@ header bytes.
 
 ### card_crypto.py
 
-Interact with key material stored inside a card image or on a live card.  The
+Interact with key material stored on a live card via PC/SC.  The
 memory layout assumed by this utility is:
 
 ```
@@ -140,16 +170,19 @@ memory layout assumed by this utility is:
 
 Supported commands:
 
-- `extract-public` – dump public key from image/card to PEM file.
-- `dump-private` – decrypt & export private key (DER/PEM/raw seed).
-- `sign` / `verify` – Ed25519 signing and verification.
+- `extract-public` – dump public key to a PEM file (automatically saved to
+  `~/.pmcc` using card metadata for the filename).
+- `sign` / `verify` – Ed25519 signing and verification.  Signing defaults to
+  producing a `.sig` file next to the input (see help for details).  If
+  verification fails the tool now prints diagnostic information
+  (key/data/signature lengths) which may help identify incorrect inputs.
 - `encrypt` / `decrypt` – sealed‑box encryption using the card’s key.
 
 Examples:
 
 ```sh
-# get public key from a local image
-python card_crypto.py extract-public --card-image card.bin
+# extract the public key (auto‑saves to ~/.pmcc based on card metadata)
+python card_crypto.py extract-public
 
 # sign a file using key on attached card
 python card_crypto.py sign --input message.txt
