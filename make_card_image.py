@@ -16,9 +16,11 @@ is determined by the selected card type.  A companion protection map file can
 also be created, protecting the header region (0x00-0x1F) by default.
 
 The metadata area is a simple UTF-8 encoded sequence of ``key=value`` lines
-terminated by a blank line.  Any of the keys below may be provided on the
-command line or via a JSON/YAML file:
-
+terminated by a blank line.  The set of valid keys is not baked into the
+script; a companion JSON schema (``metadata_fields.json``) controls which
+fields are considered and in what order.  The default schema lists the
+following fields, which may be supplied on the command line or via a
+JSON/YAML file:
     First, Last, expire, clearance, Issue_Date
 
 Example invocation::
@@ -71,6 +73,11 @@ def parse_args():
         help="JSON file containing metadata keys",
         default=None,
     )
+    parser.add_argument(
+        "--metadata-schema",
+        help="JSON file defining metadata field names",
+        default=None,
+    )
     parser.add_argument("-o", "--output", help="output image filename")
     parser.add_argument("--protect", action="store_true", help="also write a protection map locking the header")
     parser.add_argument("--interactive", action="store_true", help="prompt for missing information and optionally generate keys")
@@ -118,6 +125,31 @@ def load_file(path: str, expected: int = None) -> bytes:
     raise ValueError(f"{path} is {len(data)} bytes, expected {expected}")
 
 
+def _load_metadata_fields(schema_path: str | None = None) -> list[str]:
+    """Return the ordered list of metadata field names.
+
+    The schema is stored in a small JSON file (default ``metadata_fields.json``
+    next to this script).  It may be overridden on the command line using
+    ``--metadata-schema``.  The file can either be a simple list of strings or
+    an object with a ``fields`` key pointing to such a list.  If the file is
+    missing we fall back to the hard‑coded defaults for backwards
+    compatibility.
+    """
+    default = ["First", "Last", "expire", "clearance", "Issue_Date"]
+    if schema_path is None:
+        schema_path = Path(__file__).parent / "metadata_fields.json"
+    try:
+        with open(schema_path, "r") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return default
+    if isinstance(data, dict) and "fields" in data and isinstance(data["fields"], list):
+        return data["fields"]
+    if isinstance(data, list):
+        return data
+    raise ValueError(f"invalid metadata schema in {schema_path}")
+
+
 def build_metadata(args) -> bytes:
     # gather pairs from command line and file
     md = {}
@@ -130,8 +162,10 @@ def build_metadata(args) -> bytes:
         with open(args.metadata_file, "r") as f:
             j = json.load(f)
         md.update(j)
+
+    fields = _load_metadata_fields(args.metadata_schema)
     lines = []
-    for k in ("First", "Last", "expire", "clearance", "Issue_Date"):
+    for k in fields:
         if k in md:
             lines.append(f"{k}={md[k]}")
     if lines:
@@ -252,7 +286,8 @@ def main() -> None:
         # metadata prompts
         if not args.metadata and not args.metadata_file:
             print("Enter metadata values (leave blank to skip):")
-            for field in ("First", "Last", "expire", "clearance", "Issue_Date"):
+            fields = _load_metadata_fields(args.metadata_schema)
+            for field in fields:
                 val = input(f" {field}: ").strip()
                 if val:
                     args.metadata.append(f"{field}={val}")
@@ -281,12 +316,15 @@ def main() -> None:
     if args.metadata_file:
         with open(args.metadata_file, "r") as f:
             md.update(json.load(f))
+    # we still try to pick out the familiar name fields if they exist
+    first = _sanitize_filename_component(md.get("First", "").strip())
+    last = _sanitize_filename_component(md.get("Last", "").strip())
 
     # decide output filename if not supplied
     if not args.output:
-        first = _sanitize_filename_component(md.get("First", "").strip())
-        last = _sanitize_filename_component(md.get("Last", "").strip())
-        base = "".join([first, "_", last, "_card"]) if (first or last) else "card_image"
+        base = "card_image"
+        if first or last:
+            base = "".join([first, "_", last, "_card"])
         args.output = base + ".bin"
     # use temporary directory to build file then move
     with tempfile.TemporaryDirectory() as td:

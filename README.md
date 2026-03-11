@@ -91,8 +91,15 @@ python make_card_image.py --interactive
 ```
 
 Metadata may be supplied directly on the command line or via a JSON file
-(`--metadata-file`).  The script will optionally produce a `_pm.bin` protection
-map locking the header bytes.
+(`--metadata-file`).  The *set* of allowable metadata keys is defined in a
+separate JSON schema (`metadata_fields.json` in the same directory as the
+script).  You can edit that file or point to an alternate schema using the
+``--metadata-schema`` option; if the schema cannot be found the tool falls back
+to the original default list (`First`, `Last`, `expire`, `clearance`,
+`Issue_Date`).
+
+The script will optionally produce a `_pm.bin` protection map locking the
+header bytes.
 
 ### card_crypto.py
 

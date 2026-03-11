@@ -1,0 +1,9 @@
+{
+    "fields": [
+        "First",
+        "Last",
+        "Issue_Date",
+        "Expire",
+        "Clearance"        
+    ]
+}
