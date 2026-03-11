@@ -1,0 +1,301 @@
+#!/usr/bin/env python3
+"""Build a card image following the layout described by the user.
+
+Supports SLE4442 (256‑byte) and SLE4428 (1024‑byte) chips; the desired type
+is selected with ``--type`` (defaults to ``sle4442``).
+
+Memory map used by this helper (offsets are identical for both sizes):
+
+    0x000-0x01F   manufacturer header (copied "as is" from a blank dump)
+    0x020-0x05F   encrypted Ed25519 private key (64 bytes)
+    0x060-0x07F   Ed25519 public key (32 bytes)
+    0x080-0x0FF   metadata area (128 bytes)
+
+Values shorter than the allotted space are padded with 0x00; the image length
+is determined by the selected card type.  A companion protection map file can
+also be created, protecting the header region (0x00-0x1F) by default.
+
+The metadata area is a simple UTF-8 encoded sequence of ``key=value`` lines
+terminated by a blank line.  Any of the keys below may be provided on the
+command line or via a JSON/YAML file:
+
+    First, Last, expire, clearance, Issue_Date
+
+Example invocation::
+
+    python make_card_image.py \
+        --type sle4428 \
+        --blank blank_dump.bin \
+        --priv private_enc.der \
+        --pub public.raw \
+        --metadata First=Alice Last=Smith expire=2026-12-31 \
+        -o card.bin
+
+You can also supply ``--metadata-file`` pointing to a JSON file with the
+above keys.
+"""
+
+import argparse
+import json
+import os
+import sys
+import getpass
+from pathlib import Path
+import tempfile
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Build a card image from pieces")
+    parser.add_argument("--type",
+                        choices=["sle4442", "sle4428"],
+                        default="sle4442",
+                        help="card type/size (" 
+                             "sle4442=256‑byte, sle4428=1024‑byte)")
+    parser.add_argument("--blank", help="path to blank card dump used for header")
+    parser.add_argument("--priv", help="DER file containing encrypted private key")
+    parser.add_argument("--pub", help="raw 32‑byte public key file")
+    parser.add_argument(
+        "--metadata",
+        nargs="*",
+        help="metadata key=value pairs (see docs above)",
+        default=[],
+    )
+    parser.add_argument(
+        "--metadata-file",
+        help="JSON file containing metadata keys",
+        default=None,
+    )
+    parser.add_argument("-o", "--output", help="output image filename")
+    parser.add_argument("--protect", action="store_true", help="also write a protection map locking the header")
+    parser.add_argument("--interactive", action="store_true", help="prompt for missing information and optionally generate keys")
+    return parser.parse_args()
+
+
+def read_header(blank_path: str, size: int = 0x20) -> bytes:
+    with open(blank_path, "rb") as f:
+        data = f.read()
+    if len(data) < size:
+        raise ValueError(f"blank dump is only {len(data)} bytes long")
+    return data[:size]
+
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+
+def load_file(path: str, expected: int = None) -> bytes:
+    data = open(path, "rb").read()
+    if expected is None:
+        return data
+    if len(data) == expected:
+        return data
+    # if the length does not match, but we're expecting a public key, try
+    # to parse it as DER and extract raw bytes (handles openssl output).
+    if expected == 32:
+        try:
+            key = serialization.load_der_public_key(data)
+            raw = key.public_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PublicFormat.Raw,
+            )
+            if len(raw) == 32:
+                return raw
+        except Exception:
+            pass
+    raise ValueError(f"{path} is {len(data)} bytes, expected {expected}")
+
+
+def build_metadata(args) -> bytes:
+    # gather pairs from command line and file
+    md = {}
+    for kv in args.metadata:
+        if "=" not in kv:
+            raise ValueError(f"bad metadata pair '{kv}'")
+        k, v = kv.split("=", 1)
+        md[k] = v
+    if args.metadata_file:
+        with open(args.metadata_file, "r") as f:
+            j = json.load(f)
+        md.update(j)
+    lines = []
+    for k in ("First", "Last", "expire", "clearance", "Issue_Date"):
+        if k in md:
+            lines.append(f"{k}={md[k]}")
+    if lines:
+        lines.append("")
+    txt = "\n".join(lines)
+    b = txt.encode("utf-8")
+    if len(b) > 128:
+        raise ValueError("metadata too long")
+    return b
+
+
+def _encrypt_seed(seed: bytes, password: str) -> bytes:
+    # derive key by simple SHA256 of password for AES-256
+    from cryptography.hazmat.primitives import hashes, padding
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from cryptography.hazmat.backends import default_backend
+
+    key = hashes.Hash(hashes.SHA256(), backend=default_backend())
+    key.update(password.encode())
+    key_bytes = key.finalize()
+    iv = os.urandom(16)
+    # pad seed to block size
+    padder = padding.PKCS7(128).padder()
+    padded = padder.update(seed) + padder.finalize()
+    cipher = Cipher(algorithms.AES(key_bytes), modes.CBC(iv), default_backend())
+    encryptor = cipher.encryptor()
+    ct = encryptor.update(padded) + encryptor.finalize()
+    return iv + ct
+
+
+def _normalize_private(data: bytes, password: str | None = None) -> bytes:
+    """Return bytes suitable for storage in card region (<=64).
+
+    If input is DER it will be converted to raw seed.  If a password is
+    supplied the seed will be encrypted with AES-CBC (key=SHA256(pass)).
+    """
+    # try parse as DER
+    try:
+        key = serialization.load_der_private_key(data, password=None)
+        seed = key.private_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PrivateFormat.Raw,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    except Exception:
+        # not DER, assume data already raw
+        seed = data
+    if password:
+        encrypted = _encrypt_seed(seed, password)
+        if len(encrypted) > 0x40:
+            raise ValueError("encrypted seed too large to fit in 64 bytes")
+        return encrypted
+    else:
+        if len(seed) > 0x40:
+            raise ValueError("seed too large to fit in 64 bytes")
+        return seed
+
+
+def main() -> None:
+    args = parse_args()
+    # interactive prompting if requested or if required args are missing
+    if args.interactive or len(sys.argv) == 1:
+        # blank dump
+        while not args.blank:
+            args.blank = input("blank card dump path: ").strip() or None
+        # keys: either prompt for existing files or generate new
+        if not args.priv or not args.pub:
+            print("No key files specified; generating new Ed25519 key pair.")
+            from cryptography.hazmat.primitives.asymmetric import ed25519
+            privkey = ed25519.Ed25519PrivateKey.generate()
+            pwd = getpass.getpass("password to encrypt private key (empty for none): ")
+            if pwd == "":
+                pwd = None
+            seed = privkey.private_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PrivateFormat.Raw,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+            if pwd:
+                priv_store = _encrypt_seed(seed, pwd)
+            else:
+                priv_store = seed
+            pub_bytes = privkey.public_key().public_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PublicFormat.Raw,
+            )
+            args.priv_bytes = priv_store
+            args.pub_bytes = pub_bytes
+            save = input("save generated keys to files? [y/N]: ")
+            if save.lower().startswith("y"):
+                ppath = input("private key filename [private.der]: ").strip() or "private.der"
+                open(ppath, "wb").write(priv_store)
+                qpath = input("public key filename [public.raw]: ").strip() or "public.raw"
+                open(qpath, "wb").write(pub_bytes)
+                print(f"keys written to {ppath} and {qpath}")
+        else:
+            raw = load_file(args.priv)
+            # if user provided external private, may be raw or DER; let normalize
+            pwd = None
+            # not prompting; use none
+            args.priv_bytes = _normalize_private(raw, pwd)
+            args.pub_bytes = load_file(args.pub, expected=32)
+        # metadata prompts
+        if not args.metadata and not args.metadata_file:
+            print("Enter metadata values (leave blank to skip):")
+            for field in ("First", "Last", "expire", "clearance", "Issue_Date"):
+                val = input(f" {field}: ").strip()
+                if val:
+                    args.metadata.append(f"{field}={val}")
+    else:
+        # non-interactive path: read provided files
+        if not args.blank or not args.priv or not args.pub:
+            parser = argparse.ArgumentParser()
+            parser.error("--blank, --priv and --pub are required unless --interactive is used")
+        args.priv_bytes = load_file(args.priv)
+        args.pub_bytes = load_file(args.pub, expected=32)
+    # determine card parameters based on type
+    total_size = 256 if args.type == "sle4442" else 1024
+
+    # read header and other pieces
+    header = read_header(args.blank)
+    priv = args.priv_bytes
+    pub = args.pub_bytes
+    metadata = build_metadata(args)
+
+    # reconstruct metadata dict for naming
+    md = {}
+    for kv in args.metadata:
+        if "=" in kv:
+            k, v = kv.split("=", 1)
+            md[k] = v
+    if args.metadata_file:
+        with open(args.metadata_file, "r") as f:
+            md.update(json.load(f))
+
+    # decide output filename if not supplied
+    if not args.output:
+        first = md.get("First", "").strip().replace(" ", "_")
+        last = md.get("Last", "").strip().replace(" ", "_")
+        base = "".join([first, "_", last, "_card"]) if (first or last) else "card_image"
+        args.output = base + ".bin"
+    # use temporary directory to build file then move
+    with tempfile.TemporaryDirectory() as td:
+        temp_path = Path(td) / args.output
+        img = bytearray(b"\x00" * total_size)
+        img[0x000 : 0x000 + len(header)] = header
+        # private key region (pad with zeroes)
+        if len(priv) > 0x40:
+            raise ValueError("private key file too large (max 64 bytes)")
+        img[0x020 : 0x020 + len(priv)] = priv
+        img[0x020 + len(priv) : 0x060] = b"\x00" * (0x60 - 0x20 - len(priv))
+        img[0x060 : 0x060 + len(pub)] = pub
+        img[0x060 + len(pub) : 0x080] = b"\x00" * (0x80 - 0x60 - len(pub))
+        img[0x080 : 0x080 + len(metadata)] = metadata
+        # rest already zero
+
+        with open(temp_path, "wb") as f:
+            f.write(img)
+        print(f"wrote image ({len(img)} bytes) to temporary {temp_path}")
+        # move into place
+        import shutil
+        shutil.move(str(temp_path), args.output)
+        print(f"moved image to {args.output}")
+    # end of temporary directory block
+    # end of temporary directory block
+
+    if args.protect:
+        # generate simple protection map locking header 0-0x1F
+        pm = bytearray([0xFF] * ((total_size + 7) // 8))
+        # clear bits 0..0x1f
+        for a in range(0x20):
+            pm[a // 8] &= ~(1 << (a % 8))
+        pm_path = os.path.splitext(args.output)[0] + "_pm.bin"
+        with open(pm_path, "wb") as f:
+            f.write(pm)
+        print(f"wrote protection map ({len(pm)} bytes) to {pm_path}")
+
+
+if __name__ == "__main__":
+    main()

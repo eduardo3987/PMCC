@@ -1,0 +1,4 @@
+pyscard
+PySide6
+cryptography
+PyNaCl
