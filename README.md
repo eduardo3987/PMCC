@@ -194,7 +194,7 @@ Examples:
 # extract the public key (auto‑saves to ~/.pmcc based on card metadata)
 python card_crypto.py extract-public
 
-# sign a file using key on attached card
+# sign a file using key on attached card (creates PEM-armored signature)
 python card_crypto.py sign --input message.txt
 
 # verify a signature

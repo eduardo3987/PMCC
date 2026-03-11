@@ -344,16 +344,23 @@ def cmd_sign(args):
         sys.exit(1)
     data = open(args.input, "rb").read()
     sig = priv.sign(data)
+    # PEM-armored signature
+    import base64
+    arm = []
+    arm.append("-----BEGIN ED25519 SIGNATURE-----")
+    arm.append(base64.b64encode(sig).decode())
+    arm.append("-----END ED25519 SIGNATURE-----")
+    arm_text = "\n".join(arm) + "\n"
+
     if not args.output:
-        # default signature file lives beside the input file with ".sig" appended
         inp = Path(args.input)
         args.output = str(inp.parent / (inp.name + ".sig"))
     if args.output == "-":
-        sys.stdout.buffer.write(sig)
+        sys.stdout.write(arm_text)
     else:
-        with open(args.output, "wb") as f:
+        with open(args.output, "w") as f:
             os.fchmod(f.fileno(), 0o600)
-            f.write(sig)
+            f.write(arm_text)
     print(f"signature ({len(sig)} bytes) written to {args.output}", file=sys.stderr)
 
 
@@ -381,7 +388,14 @@ def cmd_verify(args):
         print("unable to parse public key", file=sys.stderr)
         sys.exit(1)
     data = open(args.input, "rb").read()
-    sig = open(args.sig, "rb").read()
+    raw = open(args.sig, "rb").read()
+    # detect PEM armor
+    sig = raw
+    if raw.startswith(b"-----BEGIN ED25519 SIGNATURE-----"):
+        import base64, re
+        # strip header/footer and whitespace
+        b64 = re.sub(b"-----.*?-----", b"", raw, flags=re.S).strip()
+        sig = base64.b64decode(b64)
     try:
         pk.verify(sig, data)
         print("signature OK")
@@ -626,7 +640,7 @@ def main():
     p = sub.add_parser("sign")
     p.add_argument("--reader", help="PC/SC reader to use when communicating with a card")
     p.add_argument("--input", required=True)
-    p.add_argument("-o","--output", help="output filename (default: <input>.sig in same directory; '-'=stdout)")
+    p.add_argument("-o","--output", help="output filename (default: <input>.sig in same directory; '-'=stdout). signature will be PEM-armored")
     p.add_argument("--password", help="key password (prompt if omitted)")
     p.set_defaults(func=cmd_sign)
 
