@@ -65,6 +65,31 @@ Create a card image for either an SLE4442 or SLE4428 device.  By default the
 script builds a 256‑byte image (SLE4442); pass `--type sle4428` to generate a
 1024‑byte dump suitable for SLE4428 cards.
 
+### GUI front end
+
+For users who prefer a graphical interface the project includes a simple Qt-
+based front end built with PySide6.  Launch it with:
+
+```sh
+python make_card_image_gui.py
+```
+
+The window allows you to select the blank dump and key files (or generate a
+fresh key pair and save the resulting private/public data via the provided
+buttons).  Metadata fields are presented individually according to
+`metadata_fields.json`, so you simply fill in each value rather than typing
+freeform text.  The output filename will default to `card_image_<YYYYMMDD>.bin`
+(or include the name fields if provided) and updates automatically as you
+edit metadata.  You can override it by typing a custom name.  Toggle the
+protection map option as needed.  Status messages appear in the log area at
+the bottom of the window.
+
+### Command-line examples
+
+Create a card image for either an SLE4442 or SLE4428 device.  By default the
+script builds a 256‑byte image (SLE4442); pass `--type sle4428` to generate a
+1024‑byte dump suitable for SLE4428 cards.
+
 ```sh
 # build using existing key files and a blank dump (SLE4442 default)
 python make_card_image.py \ 

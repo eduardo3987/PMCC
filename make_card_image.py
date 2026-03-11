@@ -81,6 +81,7 @@ def parse_args():
     parser.add_argument("-o", "--output", help="output image filename")
     parser.add_argument("--protect", action="store_true", help="also write a protection map locking the header")
     parser.add_argument("--interactive", action="store_true", help="prompt for missing information and optionally generate keys")
+    parser.add_argument("--gui", action="store_true", help="launch graphical interface")
     return parser.parse_args()
 
 
@@ -177,6 +178,81 @@ def build_metadata(args) -> bytes:
     return b
 
 
+# helper for GUI/other callers ------------------------------------------------
+
+from datetime import date
+
+
+def default_output_name(md: dict, base: str = "card_image") -> str:
+    """Return a reasonable default filename based on metadata and current date.
+
+    The filename will always include the local date (YYYYMMDD).  If the metadata
+    contains ``First`` or ``Last`` they are sanitized and prefixed (with
+    "_card" suffix) before the date component.  This ensures sensible names
+    while keeping them unique per day.
+    """
+    # build a base using names if available
+    first = _sanitize_filename_component(md.get("First", "").strip())
+    last = _sanitize_filename_component(md.get("Last", "").strip())
+    if first or last:
+        base = f"{first}_{last}_card"
+    today = date.today().isoformat().replace("-", "")
+    return f"{base}_{today}.bin"
+
+
+def make_image(header: bytes,
+               priv: bytes,
+               pub: bytes,
+               metadata: bytes,
+               card_type: str,
+               output: str,
+               protect: bool = False) -> None:
+    """Build card image and write it to ``output``.
+
+    This encapsulates the core logic previously residing in ``main`` so that
+    both the command‑line interface and a GUI front end can reuse it.
+    """
+    total_size = 256 if card_type == "sle4442" else 1024
+
+    # use temporary directory to build file then move
+    with tempfile.TemporaryDirectory() as td:
+        temp_path = Path(td) / output
+        img = bytearray(b"\x00" * total_size)
+        img[0x000 : 0x000 + len(header)] = header
+        # private key region (pad with zeroes)
+        if len(priv) > 0x40:
+            raise ValueError("private key file too large (max 64 bytes)")
+        img[0x020 : 0x020 + len(priv)] = priv
+        img[0x020 + len(priv) : 0x060] = b"\x00" * (0x60 - 0x20 - len(priv))
+        img[0x060 : 0x060 + len(pub)] = pub
+        img[0x060 + len(pub) : 0x080] = b"\x00" * (0x80 - 0x60 - len(pub))
+        img[0x080 : 0x080 + len(metadata)] = metadata
+        # rest already zero
+
+        with open(temp_path, "wb") as f:
+            f.write(img)
+            os.fchmod(f.fileno(), 0o600)
+        print(f"wrote image ({len(img)} bytes) to temporary {temp_path}")
+        # move into place
+        import shutil
+        shutil.move(str(temp_path), output)
+        os.chmod(output, 0o600)
+        print(f"moved image to {output}")
+    # end temporary directory
+
+    if protect:
+        # generate simple protection map locking header 0-0x1F
+        pm = bytearray([0xFF] * ((total_size + 7) // 8))
+        # clear bits 0..0x1f
+        for a in range(0x20):
+            pm[a // 8] &= ~(1 << (a % 8))
+        pm_path = os.path.splitext(output)[0] + "_pm.bin"
+        with open(pm_path, "wb") as f:
+            f.write(pm)
+            os.fchmod(f.fileno(), 0o600)
+        print(f"wrote protection map ({len(pm)} bytes) to {pm_path}")
+
+
 # constants matching card_crypto.py
 SALT_LEN = 4            # bytes of salt stored alongside blob
 NONCE_LEN = 12          # AESGCM nonce
@@ -237,6 +313,16 @@ def _normalize_private(data: bytes, password: str | None = None) -> bytes:
 
 def main() -> None:
     args = parse_args()
+
+    # if GUI requested, try to import and run the front end
+    if args.gui:
+        try:
+            import make_card_image_gui  # noqa: F401 - side effect of launching
+        except ImportError as e:
+            print("GUI dependencies not installed:", e, file=sys.stderr)
+            sys.exit(1)
+        return
+
     # interactive prompting if requested or if required args are missing
     if args.interactive or len(sys.argv) == 1:
         # blank dump
@@ -316,54 +402,13 @@ def main() -> None:
     if args.metadata_file:
         with open(args.metadata_file, "r") as f:
             md.update(json.load(f))
-    # we still try to pick out the familiar name fields if they exist
-    first = _sanitize_filename_component(md.get("First", "").strip())
-    last = _sanitize_filename_component(md.get("Last", "").strip())
 
     # decide output filename if not supplied
     if not args.output:
-        base = "card_image"
-        if first or last:
-            base = "".join([first, "_", last, "_card"])
-        args.output = base + ".bin"
-    # use temporary directory to build file then move
-    with tempfile.TemporaryDirectory() as td:
-        temp_path = Path(td) / args.output
-        img = bytearray(b"\x00" * total_size)
-        img[0x000 : 0x000 + len(header)] = header
-        # private key region (pad with zeroes)
-        if len(priv) > 0x40:
-            raise ValueError("private key file too large (max 64 bytes)")
-        img[0x020 : 0x020 + len(priv)] = priv
-        img[0x020 + len(priv) : 0x060] = b"\x00" * (0x60 - 0x20 - len(priv))
-        img[0x060 : 0x060 + len(pub)] = pub
-        img[0x060 + len(pub) : 0x080] = b"\x00" * (0x80 - 0x60 - len(pub))
-        img[0x080 : 0x080 + len(metadata)] = metadata
-        # rest already zero
+        args.output = default_output_name(md)
 
-        with open(temp_path, "wb") as f:
-            f.write(img)
-            os.fchmod(f.fileno(), 0o600)
-        print(f"wrote image ({len(img)} bytes) to temporary {temp_path}")
-        # move into place
-        import shutil
-        shutil.move(str(temp_path), args.output)
-        os.chmod(args.output, 0o600)
-        print(f"moved image to {args.output}")
-    # end of temporary directory block
-    # end of temporary directory block
-
-    if args.protect:
-        # generate simple protection map locking header 0-0x1F
-        pm = bytearray([0xFF] * ((total_size + 7) // 8))
-        # clear bits 0..0x1f
-        for a in range(0x20):
-            pm[a // 8] &= ~(1 << (a % 8))
-        pm_path = os.path.splitext(args.output)[0] + "_pm.bin"
-        with open(pm_path, "wb") as f:
-            f.write(pm)
-            os.fchmod(f.fileno(), 0o600)
-        print(f"wrote protection map ({len(pm)} bytes) to {pm_path}")
+    # build the file and optionally protection map
+    make_image(header, priv, pub, metadata, args.type, args.output, args.protect)
 
 
 if __name__ == "__main__":
