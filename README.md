@@ -347,8 +347,3 @@ Some low-level code was adapted from the [**sle-suite-pro**](https://github.com/
 The card images produced by this software are designed to be imported into [**sle-suite-pro**](https://github.com/wikilift/sle-suite-pro) and writen directly to a card.
 
 ---
-
-# License
-
-(Add license information here.)
-
