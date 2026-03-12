@@ -109,9 +109,42 @@ simple Qt‑based front ends built with PySide6.
   readers* again, pick a different reader from the list and hit *Connect*, or
   disconnect entirely.  Card image files are not supported.
 
-  The dropdown exposes the remaining commands (`extract-public`,
-  `sign`, `verify`, `encrypt`, `decrypt`).
+  The dropdown opens with **Editor** selected by default.  Other
+  commands (`extract-public`, `sign`, `verify`, `encrypt`, `decrypt`) follow
+  in the list.
+  provides a simple WYSIWYG text area and toolbar for working with messages
+  directly.
 
+  * **Editor** – this page is selected by default when the GUI opens. It
+    brings up a text editor where you can type or paste any message. The
+    toolbar buttons let you open/save from disk, encrypt the
+    current text (choose a recipient public key from ~/.pmcc or let the
+    card supply it); the resulting encrypted data will replace the contents
+    of the editor wrapped in PEM-style markers:
+
+    ```
+    -----BEGIN PMCC ENCRYPTED-----
+    <base64 data>
+    -----END PMCC ENCRYPTED-----
+    ```
+
+    Decryption operates in-place too – paste or type the wrapped base64 into
+    the editor and hit *Decrypt* (you will be prompted for the password via a
+    dialog).  You
+    can also attach a PMCC-formatted signature (not ED25519) using the card's
+    private key, extract any public key contained in the text to `~/.pmcc` by
+    supplying a filename, and verify an attached
+    the text to `~/.pmcc` by supplying a filename, and verify an attached
+    signature against the message text itself (no external signature file is
+    needed).
+    Signing uses the editor contents exactly; a newline will be added
+    automatically if the text does not already end in one.  Editing after
+    signing causes verification to fail.  The editor will
+    attempt to use the card's public key automatically; if
+    no card is connected you'll be prompted to choose from a dropdown list of
+    keys found in `~/.pmcc`.  The **Insert pubkey** button shows the same
+    list (and will fall back to the card if you cancel), so you never have to
+    hunt through the filesystem manually.
   * **Sign** – choose an input file; the signature will be written beside it
     with a `.sig` suffix and the GUI shows the auto‑chosen path.
   * **Verify** – select a public key from the pulldown list populated from
@@ -194,7 +227,7 @@ Examples:
 # extract the public key (auto‑saves to ~/.pmcc based on card metadata)
 python card_crypto.py extract-public
 
-# sign a file using key on attached card (creates PEM-armored signature)
+# sign a file using key on attached card (creates PEM-armored PMCC signature)
 python card_crypto.py sign --input message.txt
 
 # verify a signature

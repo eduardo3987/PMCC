@@ -347,9 +347,9 @@ def cmd_sign(args):
     # PEM-armored signature
     import base64
     arm = []
-    arm.append("-----BEGIN ED25519 SIGNATURE-----")
+    arm.append("-----BEGIN PMCC SIGNATURE-----")
     arm.append(base64.b64encode(sig).decode())
-    arm.append("-----END ED25519 SIGNATURE-----")
+    arm.append("-----END PMCC SIGNATURE-----")
     arm_text = "\n".join(arm) + "\n"
 
     if not args.output:
@@ -391,7 +391,8 @@ def cmd_verify(args):
     raw = open(args.sig, "rb").read()
     # detect PEM armor
     sig = raw
-    if raw.startswith(b"-----BEGIN ED25519 SIGNATURE-----"):
+    # support both old ED25519 and new PMCC markers
+    if raw.startswith(b"-----BEGIN ED25519 SIGNATURE-----") or raw.startswith(b"-----BEGIN PMCC SIGNATURE-----"):
         import base64, re
         # strip header/footer and whitespace
         b64 = re.sub(b"-----.*?-----", b"", raw, flags=re.S).strip()
