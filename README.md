@@ -344,6 +344,8 @@ model/
 
 Some low-level code was adapted from the [**sle-suite-pro**](https://github.com/wikilift/sle-suite-pro) project developed by **Wikilift**. Their work enabled communication with blank SLE cards and image dumps.
 
+The card images produced by this software are designed to be imported into [**sle-suite-pro**](https://github.com/wikilift/sle-suite-pro) and writen directly to a card.
+
 ---
 
 # License
