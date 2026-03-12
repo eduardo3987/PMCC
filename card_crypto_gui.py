@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QSizePolicy,
     QSplitter,
+    QMenuBar,
 )
 from PySide6.QtGui import QTextCursor, QFont, QIcon, QPixmap, QPainter
 
@@ -300,6 +301,8 @@ class MainWindow(QWidget):
         self.op_combo = QComboBox()
         # list commands in logical order; the editor is placed after the
         # crypto operations so it appears at the bottom of the dropdown.
+        # the combobox is kept hidden now that a menu bar provides the same
+        # functionality; we still use it internally for page switching/run.
         self.operations = [
             ("Extract public key", "extract_public"),
             ("Sign file", "sign"),
@@ -315,7 +318,44 @@ class MainWindow(QWidget):
         if idx is not None:
             self.op_combo.setCurrentIndex(idx)
         self.op_combo.currentIndexChanged.connect(self._on_op_changed)
-        main_layout.addWidget(self.op_combo)
+        # hide the combo – the Function menu replaces it
+        self.op_combo.setVisible(False)
+
+        # menu bar ----------------------------------------------------------
+        menubar = QMenuBar(self)
+        # File menu
+        file_menu = menubar.addMenu("File")
+        file_menu.addAction("Open", self._menu_open)
+        file_menu.addAction("Save", self._menu_save)
+        file_menu.addSeparator()
+        file_menu.addAction("Configure", self._configure)
+
+        # Encryption menu
+        enc_menu = menubar.addMenu("Encryption")
+        enc_menu.addAction("Encrypt", self._menu_encrypt)
+        enc_menu.addAction("Decrypt", self._menu_decrypt)
+        enc_menu.addSeparator()
+        enc_menu.addAction("Sign", self._menu_sign)
+        enc_menu.addAction("Verify", self._menu_verify)
+
+        # Keys menu
+        keys_menu = menubar.addMenu("Keys")
+        keys_menu.addAction("Insert pubkey", self._insert_pubkey)
+        keys_menu.addAction("Extract pubkey", self._extract_pubkey)
+
+        # Function menu
+        func_menu = menubar.addMenu("Function")
+        for label, cmd in self.operations:
+            # QAction.triggered may emit a boolean or nothing; accept an optional
+            # argument so the slot works either way.
+            func_menu.addAction(label, lambda checked=None, c=cmd: self._select_function(c))
+
+        # About menu
+        about_menu = menubar.addMenu("About")
+        about_menu.addAction("PMCC", self._about_pmcc)
+        about_menu.addAction("Help", self._show_help)
+
+        main_layout.setMenuBar(menubar)
 
         self.pages = QStackedWidget()
         self._build_pages()
@@ -532,31 +572,10 @@ class MainWindow(QWidget):
         page = QWidget()
         layout = QVBoxLayout()
 
-        # toolbar: first row has file/crypto operations, second row holds
-        # markdown formatting and the preview toggle.
-        # row one
-        hl1 = QHBoxLayout()
-        # file operations
-        self.open_btn = QPushButton("Open")
-        self.save_btn = QPushButton("Save")
-        self.encrypt_btn = QPushButton("Encrypt")
-        self.decrypt_btn = QPushButton("Decrypt")
-        self.sign_btn = QPushButton("Sign (attach)")
-        self.verify_btn = QPushButton("Verify")
-        self.insert_pub_btn = QPushButton("Insert pubkey")
-        self.extract_pub_btn = QPushButton("Extract pubkey")
-        for btn in (
-            self.open_btn,
-            self.save_btn,
-            self.encrypt_btn,
-            self.decrypt_btn,
-            self.sign_btn,
-            self.verify_btn,
-            self.insert_pub_btn,
-            self.extract_pub_btn,
-        ):
-            hl1.addWidget(btn)
-        layout.addLayout(hl1)
+        # toolbar rows ------------------------------------------------------
+        # formatting toolbar (first row) and preview toggle (second row) are
+        # kept below. file/crypto operations have been migrated to the menu
+        # bar at the top of the window so the top row is no longer needed.
 
         # row two – formatting tools
         hl2 = QHBoxLayout()
@@ -657,15 +676,6 @@ class MainWindow(QWidget):
 
         page.setLayout(layout)
 
-        # signal connections for file ops
-        self.open_btn.clicked.connect(self._open_file_editor)
-        self.save_btn.clicked.connect(self._save_file_editor)
-        self.encrypt_btn.clicked.connect(self._encrypt_editor)
-        self.decrypt_btn.clicked.connect(self._decrypt_editor)
-        self.sign_btn.clicked.connect(self._sign_editor)
-        self.verify_btn.clicked.connect(self._verify_editor)
-        self.insert_pub_btn.clicked.connect(self._insert_pubkey)
-        self.extract_pub_btn.clicked.connect(self._extract_pubkey)
 
         # default the editor to preview mode; this gives users the richer
         # WYSIWYG experience immediately.  The preview button text/state will
@@ -1561,6 +1571,66 @@ class MainWindow(QWidget):
         # lookup page index rather than relying on combo index
         page_idx = self.page_indices.get(cmd, idx)
         self.pages.setCurrentIndex(page_idx)
+
+    # ------------------------------------------------------------------
+    # menu helpers
+    # ------------------------------------------------------------------
+    def _select_function(self, cmd: str):
+        """Switch to a function (equivalent to choosing from the hidden combo).
+
+        The Function menu uses this helper so that the rest of the codebase can
+        continue to rely on ``self.op_combo`` for the currently selected
+        operation.  We don't automatically execute anything; the user can still
+        press the Run button or use a menu item that performs a direct action
+        (e.g. Encrypt under Encryption menu).
+        """
+        idx = self.op_combo.findData(cmd)
+        if idx != -1:
+            self.op_combo.setCurrentIndex(idx)
+
+    def _configure(self):
+        """Placeholder for a configuration/settings dialog."""
+        QMessageBox.information(self, "Configure", "Configuration dialog is not implemented yet.")
+
+    # file-menu wrappers --------------------------------------------------
+    def _menu_open(self):
+        self._select_function("editor")
+        self._open_file_editor()
+
+    def _menu_save(self):
+        self._select_function("editor")
+        self._save_file_editor()
+
+    def _about_pmcc(self):
+        QMessageBox.information(
+            self,
+            "About PMCC",
+            "Poor Man's Crypto Card GUI\nSee README for details.",
+        )
+
+    def _show_help(self):
+        QMessageBox.information(
+            self,
+            "Help",
+            "Refer to documentation or README.md for usage instructions.",
+        )
+
+    # helpers for menu encryption entries --------------------------------
+    def _menu_encrypt(self):
+        self._select_function("editor")
+        self._encrypt_editor()
+
+    def _menu_decrypt(self):
+        self._select_function("editor")
+        self._decrypt_editor()
+
+    def _menu_sign(self):
+        self._select_function("editor")
+        self._sign_editor()
+
+    def _menu_verify(self):
+        self._select_function("editor")
+        self._verify_editor()
 
     def log(self, msg: str) -> None:
         self.log_area.append(msg)
