@@ -342,7 +342,7 @@ model/
 
 # Acknowledgements
 
-Some low-level code was adapted from the **sle-suite-pro** project developed by **Wikilift**. Their work enabled communication with blank SLE cards and image dumps.
+Some low-level code was adapted from the [**sle-suite-pro**](https://github.com/wikilift/sle-suite-pro) project developed by **Wikilift**. Their work enabled communication with blank SLE cards and image dumps.
 
 ---
 
