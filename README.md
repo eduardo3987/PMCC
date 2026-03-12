@@ -120,8 +120,12 @@ simple Qt‑based front ends built with PySide6.
 
   * **Editor** – this page is selected by default when the GUI opens. It
     now provides a simple markdown-aware editor rather than a plain text box.
+    The editor starts in *preview* mode, so you immediately see rendered
+    output when the window appears.
     The toolbar includes the familiar file operations (open/save), card
     crypto helpers (encrypt, decrypt, sign, verify, insert/extract public key)
+    and a new *Clear* button just before the preview toggle, which empties the
+    text area without affecting the log or any linked files.
     and a full set of markdown formatting buttons – bold, italic, headings,
     lists, quotes, code, links, images, horizontal rules, etc.  Most of these
     are displayed as icons (with text fallback) by querying the current
@@ -165,6 +169,33 @@ simple Qt‑based front ends built with PySide6.
     newline will be appended automatically if needed.  Public key insertion and
     extraction work from either the card or the `~/.pmcc` directory as
     described above.
+
+    **Note:** if the editor is currently in *preview* mode the GUI will
+    automatically switch back to raw markdown before performing an encrypt,
+    decrypt, sign or verify operation.  The preview renderer can otherwise
+    hang or mangle the opaque data blocks used by these commands, so it is
+    disabled silently; a log message is written indicating the change.  You
+    may re‑enable preview manually once the operation has completed.
+
+    Switching back and forth between raw/preview used to remove the newline
+    before a signature's `-----END` line, which broke verification.  The
+    editor now protects any existing signature block by wrapping it in a
+    fenced code section while rendering.  This keeps the block intact and
+    prevents the missing newline issue; signatures appear as a preformatted
+    block in preview but are otherwise unaffected.
+
+    In addition, the editor now tracks whether the rich-text view has been
+    edited.  If you merely toggle the preview on and off without making any
+    changes, the original markdown text is preserved verbatim.  This avoids
+    subtle data loss when inspecting a message – previously the conversion
+    round‑trip could shorten the text by hundreds of bytes, causing signatures
+    to fail.  Only when you actually modify the preview (typing, formatting,
+    etc.) will the HTML be converted back into Markdown; in that case your
+    edits are reflected but the content may change length.
+
+    **Tip:** before signing or verifying, make sure you are happy with the
+    message and avoid editing it in preview mode.  The application will switch
+    off preview automatically for crypto operations and log a reminder.
   * **Sign** – choose an input file; the signature will be written beside it
     with a `.sig` suffix and the GUI shows the auto‑chosen path.
   * **Verify** – select a public key from the pulldown list populated from

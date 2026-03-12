@@ -60,6 +60,12 @@ class MarkdownEditor(QWidget):
         self.preview.setReadOnly(False)
         self.preview.setAcceptRichText(True)
         self._is_preview = False
+        # whether the user has edited in preview; used to avoid stomping the
+        # original markdown when simply toggling back and forth.
+        self._preview_modified = False
+        # internal guard to ignore textChanged signals caused by our own
+        # programmatic updates (refresh_preview etc.)
+        self._suppress_preview_modified = False
 
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -80,9 +86,13 @@ class MarkdownEditor(QWidget):
     def toggle_preview(self):
         # switch between raw markdown and rendered HTML
         if self._is_preview:
-            # going back to raw: convert HTML to markdown
-            md = self._to_markdown(self.preview.toHtml())
-            self.editor.setPlainText(md)
+            # going back to raw: if the user edited in the rich view we need to
+            # convert, otherwise just restore the original markdown so we don't
+            # lose any data (CRLFs, unusual spacing, etc.) when the round-trip
+            # converter is imperfect.
+            if self._preview_modified:
+                md = self._to_markdown(self.preview.toHtml())
+                self.editor.setPlainText(md)
             self.preview.hide()
             self.editor.show()
             self._is_preview = False
@@ -92,6 +102,8 @@ class MarkdownEditor(QWidget):
             self.editor.hide()
             self.preview.show()
             self._is_preview = True
+            # we just entered preview; no edits yet
+            self._preview_modified = False
 
     def refresh_preview(self):
         """Re-render the preview from the current editor contents.
@@ -100,11 +112,34 @@ class MarkdownEditor(QWidget):
         any existing cursor/selection).
         """
         html = self._to_html(self.editor.toPlainText())
-        self.preview.setHtml(html)
+        # updating the preview programmatically shouldn't count as a user edit
+        # otherwise simply toggling preview on/off would mark it dirty.
+        self._suppress_preview_modified = True
+        try:
+            self.preview.setHtml(html)
+        finally:
+            self._suppress_preview_modified = False
 
     # conversion helpers ---------------------------------------------------
 
     def _to_html(self, md: str) -> str:
+        # protect PMCC/ED25519 signature blocks by wrapping them in a fenced
+        # code block.  Without this the markdown renderer will treat the
+        # delimiters as ordinary text which ends up being converted to
+        # paragraphs; when converting the rich text back to markdown the
+        # newline preceding the END marker can be lost, resulting in a
+        # malformed signature.  The code block keeps the entire blob intact
+        # during round trips and displays nicely in preview as preformatted
+        # text.
+        import re
+        def _protect_sig(match):
+            return "```\n" + match.group(0) + "\n```"
+        md = re.sub(
+            r"(-----BEGIN (?:ED25519|PMCC) SIGNATURE-----.*?-----END (?:ED25519|PMCC) SIGNATURE-----)",
+            _protect_sig,
+            md,
+            flags=re.S,
+        )
         try:
             import markdown as _md
             return _md.markdown(md, extensions=["fenced_code", "tables"])
@@ -119,6 +154,14 @@ class MarkdownEditor(QWidget):
         try:
             import html2text
             md = html2text.html2text(content)
+            # html2text may collapse newlines around signature boundaries; make
+            # sure the END marker starts on its own line so verification will
+            # continue to work after toggling back and forth.
+            md = re.sub(
+                r"(?<!\n)(-----END (?:ED25519|PMCC) SIGNATURE-----)",
+                r"\n\1",
+                md,
+            )
             return md.rstrip("\n")
         except ImportError:
             # simple fallback that handles common tags so WYSIWYG edits are
@@ -145,6 +188,12 @@ class MarkdownEditor(QWidget):
             content = re.sub(r"</p\s*>", "\n\n", content)
             # strip everything else
             content = re.sub(r"<[^>]+>", "", content)
+            # ensure signature END markers remain on their own line
+            content = re.sub(
+                r"(?<!\n)(-----END (?:ED25519|PMCC) SIGNATURE-----)",
+                r"\n\1",
+                content,
+            )
             return content
 
     # proxy methods so callers can treat this like a QTextEdit
@@ -558,6 +607,9 @@ class MainWindow(QWidget):
         self.image_btn.setCheckable(False)
         self.hr_btn = themed("insert-horizontal-rule", "Horizontal rule")
         self.hr_btn.setCheckable(False)
+        # clear contents button (appears before preview toggle)
+        self.clear_btn = themed("edit-clear", "Clear")
+        self.clear_btn.setCheckable(False)
         # preview toggle
         self.preview_btn = themed("view-preview", "Preview")
         self.preview_btn.setCheckable(True)
@@ -574,6 +626,7 @@ class MainWindow(QWidget):
             self.link_btn,
             self.image_btn,
             self.hr_btn,
+            self.clear_btn,
             self.preview_btn,
         ):
             btn.setFocusPolicy(Qt.NoFocus)
@@ -589,6 +642,7 @@ class MainWindow(QWidget):
             self.link_btn,
             self.image_btn,
             self.hr_btn,
+            self.clear_btn,
             self.preview_btn,
         ):
             hl2.addWidget(btn)
@@ -612,6 +666,11 @@ class MainWindow(QWidget):
         self.verify_btn.clicked.connect(self._verify_editor)
         self.insert_pub_btn.clicked.connect(self._insert_pubkey)
         self.extract_pub_btn.clicked.connect(self._extract_pubkey)
+
+        # default the editor to preview mode; this gives users the richer
+        # WYSIWYG experience immediately.  The preview button text/state will
+        # be updated by _toggle_preview().
+        self._toggle_preview()
         # markdown formatting signals
         self.bold_btn.clicked.connect(self._format_bold)
         self.italic_btn.clicked.connect(self._format_italic)
@@ -624,6 +683,7 @@ class MainWindow(QWidget):
         self.link_btn.clicked.connect(self._insert_link)
         self.image_btn.clicked.connect(self._insert_image)
         self.hr_btn.clicked.connect(self._insert_hr)
+        self.clear_btn.clicked.connect(self._clear_editor)
         self.preview_btn.clicked.connect(self._toggle_preview)
 
         # maintain raw-mode heading flag used when typing
@@ -670,6 +730,9 @@ class MainWindow(QWidget):
     def _open_file_editor(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open file")
         if path:
+            # ensure raw mode so loading a file doesn't attempt to render in
+            # preview (may be large and slow)
+            self._ensure_raw_mode()
             try:
                 with open(path, "r", encoding="utf-8", errors="ignore") as f:
                     self.editor_text.setPlainText(f.read())
@@ -679,13 +742,38 @@ class MainWindow(QWidget):
     def _save_file_editor(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save file")
         if path:
+            # when saving it's fine to grab the raw text; if we are currently in
+            # preview mode we don't want to force a conversion here since the
+            # editor already keeps the raw markdown up to date, but the helper
+            # below normalises it anyway.
+            self._ensure_raw_mode()
             try:
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(self.editor_text.toPlainText())
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"cannot save file: {e}")
 
+    def _ensure_raw_mode(self):
+        """If the markdown editor is showing a preview, switch back to raw mode.
+
+        This is important for crypto operations because the preview renderer can
+        mangle binary-looking blocks (base64, signature delimiters) and the
+        conversions are expensive; leaving the editor in preview state while
+        inserting or reading large text may appear to lock the UI.  By forcing
+        raw mode we operate directly on the underlying QTextEdit contents and
+        avoid unnecessary markdown/html round trips.
+        """
+        if isinstance(self.editor_text, MarkdownEditor) and self.editor_text._is_preview:
+            self.log("disabling preview mode for crypto operation")
+            # _toggle_preview handles the conversion and button state updates
+            self._toggle_preview()
+
     def _encrypt_editor(self):
+        # make sure we are not in preview mode before grabbing the text; this
+        # also synchronises any edits the user may have made in the WYSIWYG
+        # view back into the raw markdown buffer.
+        self._ensure_raw_mode()
+
         # choose a recipient public key from ~/.pmcc dropdown; card used if blank
         args = argparse.Namespace()
         key = self._choose_pubkey_file(allow_blank=True)
@@ -732,6 +820,10 @@ class MainWindow(QWidget):
 
     def _decrypt_editor(self):
         # decrypt the current contents of the editor (expects base64 input)
+        # make sure we're not in preview mode, otherwise reading the contents
+        # may trigger a costly html->markdown conversion and writing the output
+        # could attempt to render an arbitrarily large result.
+        self._ensure_raw_mode()
         import base64, tempfile
         txt = self.editor_text.toPlainText().strip()
         if not txt:
@@ -788,6 +880,11 @@ class MainWindow(QWidget):
                 pass
 
     def _sign_editor(self):
+        # ensure raw markdown so we don't accidentally mangle the signature
+        # boundaries when preview mode is active (those lines look like
+        # horizontal rules to the markdown parser).
+        self._ensure_raw_mode()
+
         # normalize editor text to always end with newline before signing
         content = self.editor_text.toPlainText()
         if content and not content.endswith("\n"):
@@ -825,6 +922,10 @@ class MainWindow(QWidget):
             self.log(f"sign error: {e}")
 
     def _verify_editor(self):
+        # signature search and verification must operate on the original
+        # markdown text; convert preview to raw if necessary so we don't end up
+        # looking at HTML-ified content.
+        self._ensure_raw_mode()
         txt = self.editor_text.toPlainText()
         import re, base64
         # find all signature blocks, pick the last one to avoid accidental matches
@@ -1314,6 +1415,11 @@ class MainWindow(QWidget):
 
     def _on_preview_text_changed(self):
         """Ensure new paragraphs inherit heading style when preview heading mode is on."""
+        # ignore programmatic updates
+        if getattr(self, '_suppress_preview_modified', False):
+            return
+        # mark as edited by the user
+        self._preview_modified = True
         if hasattr(self, '_suppress_preview_change') and self._suppress_preview_change:
             return
         if not getattr(self, "_preview_heading_mode", False):
@@ -1353,6 +1459,17 @@ class MainWindow(QWidget):
                 from PySide6.QtCore import QTimer
                 QTimer.singleShot(0, lambda: self.editor_text.editor.setFocus())
 
+
+    def _clear_editor(self):
+        """Remove all text from the editor and reset modified state."""
+        self.editor_text.clear()
+        # if preview was active, also clear that view
+        if isinstance(self.editor_text, MarkdownEditor) and self.editor_text._is_preview:
+            self.editor_text.preview.clear()
+        # nothing in preview now
+        if isinstance(self.editor_text, MarkdownEditor):
+            self.editor_text._preview_modified = False
+        self.log("editor cleared")
 
     def _choose_pubkey_file(self, allow_blank: bool = False) -> str | None:
         """Return path of a public-key file from ~/.pmcc via dropdown.
