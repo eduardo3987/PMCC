@@ -181,6 +181,7 @@
     "menu.about": "Über",
     "menu.exit": "Beenden",
     "menu.export_bin": "Exportieren .bin",
+    "menu.card_metadata": "Kartendaten",
     "menu.file": "Datei",
     "menu.help": "Hilfe",
     "menu.import_bin": "Importieren .bin",

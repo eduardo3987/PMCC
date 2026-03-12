@@ -353,6 +353,7 @@ class MainWindow(QWidget):
         # About menu
         about_menu = menubar.addMenu("About")
         about_menu.addAction("PMCC", self._about_pmcc)
+        about_menu.addAction("Card metadata", self._show_card_metadata)
         about_menu.addAction("Help", self._show_help)
 
         main_layout.setMenuBar(menubar)
@@ -1529,6 +1530,9 @@ class MainWindow(QWidget):
             return
         try:
             self.pcsc.connect(reader=rdr)
+            # PCSCManager.connect doesn't update ``reader`` when passed, so
+            # remember it here for other routines that rely on the attribute.
+            self.pcsc.reader = rdr
             self.status_label.setText(f"connected to {rdr}")
             self.log(f"connected to {rdr}")
         except Exception as e:
@@ -1607,6 +1611,27 @@ class MainWindow(QWidget):
             "About PMCC",
             "Poor Man's Crypto Card GUI\nSee README for details.",
         )
+
+    def _show_card_metadata(self):
+        """Display metadata stored on the currently connected card.
+
+        The application attempts to read the full card image via PC/SC and then
+        parses the 128‑byte metadata region.  If no reader is connected or the
+        card contains no metadata the user is informed accordingly.
+        """
+        # we don't need to check for a connected reader ourselves; the
+        # helper will attempt to connect if ``mgr.conn`` is None and will
+        # raise an informative exception otherwise.
+        try:
+            img = card_crypto.read_image_from_card(manager=self.pcsc)
+            md = card_crypto._parse_metadata(img)
+            if not md:
+                QMessageBox.information(self, "Card Metadata", "No metadata found on card")
+                return
+            lines = [f"{k}={v}" for k, v in md.items()]
+            QMessageBox.information(self, "Card Metadata", "\n".join(lines))
+        except Exception as e:
+            QMessageBox.warning(self, "Card Metadata", str(e))
 
     def _show_help(self):
         QMessageBox.information(

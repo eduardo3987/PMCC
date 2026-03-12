@@ -104,6 +104,7 @@
     "menu.about": "About",
     "menu.exit": "Exit",
     "menu.export_bin": "Export .bin",
+    "menu.card_metadata": "Card metadata",
     "menu.file": "File",
     "menu.help": "Help",
     "menu.import_bin": "Import .bin",

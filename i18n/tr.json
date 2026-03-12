@@ -104,6 +104,7 @@
     "menu.about": "Hakkında",
     "menu.exit": "Çıkış",
     "menu.export_bin": ".bin Dışa Aktar",
+    "menu.card_metadata": "Kart Bilgileri",
     "menu.file": "Dosya",
     "menu.help": "Yardım",
     "menu.import_bin": ".bin İçe Aktar",
