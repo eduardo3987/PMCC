@@ -42,6 +42,9 @@ These dumps serve as the `--blank` input used by `make_card_image.py`.
   GUI.
 - `i18n/` – translation files used by the GUI and utilities.
 
+  The GUI defaults to English (`en`); you can change it by editing the
+  ``language`` setting in the configuration file (see below).
+
 
 ## Prerequisites
 
@@ -109,42 +112,59 @@ simple Qt‑based front ends built with PySide6.
   readers* again, pick a different reader from the list and hit *Connect*, or
   disconnect entirely.  Card image files are not supported.
 
-  The dropdown opens with **Editor** selected by default.  Other
-  commands (`extract-public`, `sign`, `verify`, `encrypt`, `decrypt`) follow
-  in the list.
+  The dropdown lists the crypto commands first (`extract-public`, `sign`,
+  `verify`, `encrypt`, `decrypt`), with **Editor** at the bottom; the editor
+  option is still selected by default when the window launches.  The editor
   provides a simple WYSIWYG text area and toolbar for working with messages
   directly.
 
   * **Editor** – this page is selected by default when the GUI opens. It
-    brings up a text editor where you can type or paste any message. The
-    toolbar buttons let you open/save from disk, encrypt the
-    current text (choose a recipient public key from ~/.pmcc or let the
-    card supply it); the resulting encrypted data will replace the contents
-    of the editor wrapped in PEM-style markers:
+    now provides a simple markdown-aware editor rather than a plain text box.
+    The toolbar includes the familiar file operations (open/save), card
+    crypto helpers (encrypt, decrypt, sign, verify, insert/extract public key)
+    and a full set of markdown formatting buttons – bold, italic, headings,
+    lists, quotes, code, links, images, horizontal rules, etc.  Most of these
+    are displayed as icons (with text fallback) by querying the current
+    desktop theme via `QIcon.fromTheme()`.  If your environment does not supply
+    a particular glyph the button will simply show a short label.  You can
+    still hover to see tooltips.  A *Preview* button toggles the editor between raw Markdown and a rendered, rich-text
+    WYSIWYG view.  When the rich view is active you can continue typing and
+    the formatting appears inline; you may also use the toolbar buttons to
+    apply bold/italic/heading/list/quote/etc. directly to the visible text just
+    like a normal word processor.  The bold/italic buttons behave as toggles,
+    appearing depressed while the current selection or insertion point uses that
+    style.  Clicking any toolbar button does **not** steal focus; the cursor
+    stays in the editor so you can continue typing uninterrupted.  List
+    buttons similarly operate on the current paragraph without moving focus –
+    they convert it into a bullet or numbered list, and pressing **Enter**
+    creates the next list item.  Heading and list buttons now use native
+    QTextBlock/QTextList formats so they behave like a real WYSIWYG editor.
 
-    ```
-    -----BEGIN PMCC ENCRYPTED-----
-    <base64 data>
-    -----END PMCC ENCRYPTED-----
-    ```
+    In **raw** mode the heading button toggles a "heading mode"; while active
+    every new line you create (by pressing **Enter**) is automatically
+    prefixed with `# `, making it easy to type consecutive headings without
+    manually inserting the marker.  Clicking the button again exits heading
+    mode.  In **preview** mode the same button also turns the current paragraph
+    into a heading – and any subsequent paragraphs created with **Enter** will
+    automatically inherit the heading level (the font size updates immediately),
+    allowing you to keep typing headers without re‑clicking the button.  This
+    mirrors the behaviour of most word processors.
 
-    Decryption operates in-place too – paste or type the wrapped base64 into
-    the editor and hit *Decrypt* (you will be prompted for the password via a
-    dialog).  You
-    can also attach a PMCC-formatted signature (not ED25519) using the card's
-    private key, extract any public key contained in the text to `~/.pmcc` by
-    supplying a filename, and verify an attached
-    the text to `~/.pmcc` by supplying a filename, and verify an attached
-    signature against the message text itself (no external signature file is
-    needed).
-    Signing uses the editor contents exactly; a newline will be added
-    automatically if the text does not already end in one.  Editing after
-    signing causes verification to fail.  The editor will
-    attempt to use the card's public key automatically; if
-    no card is connected you'll be prompted to choose from a dropdown list of
-    keys found in `~/.pmcc`.  The **Insert pubkey** button shows the same
-    list (and will fall back to the card if you cancel), so you never have to
-    hunt through the filesystem manually.
+    The link dialog now prompts first for the display text (defaulting to any
+    selected text) and then for the URL.  Both values are used when inserting
+    the link.
+    converts the current HTML back into Markdown so you can make manual edits.
+    Conversion is heuristic so very complex edits may not round-trip perfectly,
+    but basic styling will be preserved.  This behaviour relies on the [`markdown`](https://pypi.org/project/Markdown/)
+    and [`html2text`](https://pypi.org/project/html2text/) libraries, both of
+    which are now listed in `requirements.txt`.
+
+    The crypto features behave exactly as before: encrypting the current text
+    replaces it with a base64‑wrapped PMCC ciphertext, decryption prompts for
+    a password, and signatures are attached/verified in‑place.  When signing a
+    newline will be appended automatically if needed.  Public key insertion and
+    extraction work from either the card or the `~/.pmcc` directory as
+    described above.
   * **Sign** – choose an input file; the signature will be written beside it
     with a `.sig` suffix and the GUI shows the auto‑chosen path.
   * **Verify** – select a public key from the pulldown list populated from

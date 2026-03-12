@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QFileDialog,
     QTextEdit,
+    QTextBrowser,
     QComboBox,
     QRadioButton,
     QButtonGroup,
@@ -38,6 +39,151 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSplitter,
 )
+from PySide6.QtGui import QTextCursor, QFont, QIcon, QPixmap, QPainter
+
+# utility composite widget used by the editor page
+class MarkdownEditor(QWidget):
+    """Simple markdown editor with raw/preview toggle.
+
+    Internally it keeps a ``QTextEdit`` for the raw markdown source and a
+    second ``QTextEdit`` for the rendered (and editable) HTML.  Only one
+    widget is visible at a time; toggling into preview mode converts the
+    markdown to HTML and back again when leaving preview.  This gives a
+    basic WYSIWYG experience while allowing full markdown editing when raw
+    mode is active.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.editor = QTextEdit()
+        self.preview = QTextEdit()
+        self.preview.setReadOnly(False)
+        self.preview.setAcceptRichText(True)
+        self._is_preview = False
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.editor)
+        layout.addWidget(self.preview)
+        self.setLayout(layout)
+
+        # start with preview hidden
+        self.preview.hide()
+
+        # keep preview updated when typing in raw mode if it's visible
+        self.editor.textChanged.connect(self._on_text_changed)
+
+    def _on_text_changed(self):
+        if self._is_preview:
+            self.refresh_preview()
+
+    def toggle_preview(self):
+        # switch between raw markdown and rendered HTML
+        if self._is_preview:
+            # going back to raw: convert HTML to markdown
+            md = self._to_markdown(self.preview.toHtml())
+            self.editor.setPlainText(md)
+            self.preview.hide()
+            self.editor.show()
+            self._is_preview = False
+        else:
+            # going to preview: render current markdown
+            self.refresh_preview()
+            self.editor.hide()
+            self.preview.show()
+            self._is_preview = True
+
+    def refresh_preview(self):
+        """Re-render the preview from the current editor contents.
+
+        The result is written into the preview QTextEdit (which will preserve
+        any existing cursor/selection).
+        """
+        html = self._to_html(self.editor.toPlainText())
+        self.preview.setHtml(html)
+
+    # conversion helpers ---------------------------------------------------
+
+    def _to_html(self, md: str) -> str:
+        try:
+            import markdown as _md
+            return _md.markdown(md, extensions=["fenced_code", "tables"])
+        except ImportError:
+            return md
+
+    def _to_markdown(self, html: str) -> str:
+        # strip off the Qt-generated <html> / <head> / <body> wrapper if present
+        import re
+        m = re.search(r"<body[^>]*>(.*)</body>", html, re.S)
+        content = m.group(1) if m else html
+        try:
+            import html2text
+            md = html2text.html2text(content)
+            return md.rstrip("\n")
+        except ImportError:
+            # simple fallback that handles common tags so WYSIWYG edits are
+            # somewhat preserved
+            # headings
+            for i in range(6, 0, -1):
+                content = re.sub(
+                    rf"<h{i}[^>]*>(.*?)</h{i}>",
+                    lambda m: "#" * i + " " + m.group(1) + "\n",
+                    content,
+                    flags=re.S,
+                )
+            # bold/strong and spans with font-weight
+            content = re.sub(r"<(?:strong|b)>(.*?)</(?:strong|b)>", r"**\1**", content, flags=re.S)
+            content = re.sub(r"<span[^>]*font-weight:\s*700[^>]*>(.*?)</span>", r"**\1**", content, flags=re.S)
+            # italic/em and spans with font-style
+            content = re.sub(r"<(?:em|i)>(.*?)</(?:em|i)>", r"*\1*", content, flags=re.S)
+            content = re.sub(r"<span[^>]*font-style:\s*italic[^>]*>(.*?)</span>", r"*\1*", content, flags=re.S)
+            # lists
+            content = re.sub(r"<ul[^>]*>\s*(<li>.*?</li>)\s*</ul>", lambda m: re.sub(r"<li>(.*?)</li>", r"- \1\n", m.group(1), flags=re.S), content, flags=re.S)
+            content = re.sub(r"<ol[^>]*>\s*(<li>.*?</li>)\s*</ol>", lambda m: ''.join(f"{i+1}. {item}\n" for i,item in enumerate(re.findall(r'<li>(.*?)</li>', m.group(1), flags=re.S))), content, flags=re.S)
+            # line breaks & paragraphs
+            content = re.sub(r"<br\s*/?>", "\n", content)
+            content = re.sub(r"</p\s*>", "\n\n", content)
+            # strip everything else
+            content = re.sub(r"<[^>]+>", "", content)
+            return content
+
+    # proxy methods so callers can treat this like a QTextEdit
+    def toPlainText(self):
+        # always return markdown representation (so callers can ignore mode)
+        if self._is_preview:
+            return self._to_markdown(self.preview.toHtml())
+        return self.editor.toPlainText()
+
+    def setPlainText(self, text):
+        # write into the markdown editor; update preview if currently visible
+        self.editor.setPlainText(text)
+        if self._is_preview:
+            self.refresh_preview()
+
+    def insertPlainText(self, text):
+        self.editor.insertPlainText(text)
+        if self._is_preview:
+            self.refresh_preview()
+
+    def textCursor(self):
+        # always operate on the underlying plain editor when formatting
+        return self.editor.textCursor()
+
+    def setTextCursor(self, cursor):
+        return self.editor.setTextCursor(cursor)
+
+    def append(self, text):
+        self.editor.append(text)
+        if self._is_preview:
+            self.refresh_preview()
+
+    def selectAll(self):
+        self.editor.selectAll()
+
+    def clear(self):
+        self.editor.clear()
+        if self._is_preview:
+            self.preview.clear()
 from PySide6.QtCore import Qt
 
 from core.pcsc_manager import PCSCManager
@@ -103,14 +249,15 @@ class MainWindow(QWidget):
 
         # operation selector & pages --------------------------------------
         self.op_combo = QComboBox()
-        # put editor first so it's the top item in the dropdown
+        # list commands in logical order; the editor is placed after the
+        # crypto operations so it appears at the bottom of the dropdown.
         self.operations = [
-            ("Editor", "editor"),  # WYSIWYG text editor page
             ("Extract public key", "extract_public"),
             ("Sign file", "sign"),
             ("Verify signature", "verify"),
             ("Encrypt file", "encrypt"),
             ("Decrypt file", "decrypt"),
+            ("Editor", "editor"),  # WYSIWYG text editor page
         ]
         for label, cmd in self.operations:
             self.op_combo.addItem(label, cmd)
@@ -332,12 +479,15 @@ class MainWindow(QWidget):
         return page
 
     def _build_editor_page(self) -> QWidget:
-        """Construct the WYSIWYG editor page with controls."""
+        """Construct the WYSIWYG editor page with markdown controls."""
         page = QWidget()
         layout = QVBoxLayout()
 
-        hl = QHBoxLayout()
-        # toolbar buttons
+        # toolbar: first row has file/crypto operations, second row holds
+        # markdown formatting and the preview toggle.
+        # row one
+        hl1 = QHBoxLayout()
+        # file operations
         self.open_btn = QPushButton("Open")
         self.save_btn = QPushButton("Save")
         self.encrypt_btn = QPushButton("Encrypt")
@@ -356,15 +506,104 @@ class MainWindow(QWidget):
             self.insert_pub_btn,
             self.extract_pub_btn,
         ):
-            hl.addWidget(btn)
-        layout.addLayout(hl)
+            hl1.addWidget(btn)
+        layout.addLayout(hl1)
 
-        self.editor_text = QTextEdit()
-        layout.addWidget(self.editor_text)
+        # row two – formatting tools
+        hl2 = QHBoxLayout()
+        # create buttons and try to give them standard icons
+        def themed(name, fallback_text):
+            icon = QIcon.fromTheme(name)
+            # some themes lack a heading glyph; synthesize a simple one
+            if icon.isNull() and name == "format-text-heading":
+                pix = QPixmap(16, 16)
+                pix.fill(Qt.transparent)
+                painter = QPainter(pix)
+                painter.setPen(Qt.black)
+                font = painter.font()
+                font.setBold(True)
+                font.setPointSize(10)
+                painter.setFont(font)
+                painter.drawText(pix.rect(), Qt.AlignCenter, "H")
+                painter.end()
+                icon = QIcon(pix)
+            btn = QPushButton()
+            if not icon.isNull():
+                btn.setIcon(icon)
+                btn.setText("")
+            else:
+                btn.setText(fallback_text)
+            btn.setToolTip(fallback_text)
+            return btn
+
+        self.bold_btn = themed("format-text-bold", "Bold")
+        self.bold_btn.setCheckable(True)
+        self.italic_btn = themed("format-text-italic", "Italic")
+        self.italic_btn.setCheckable(True)
+        self.heading_btn = themed("format-text-heading", "Heading")
+        self.heading_btn.setCheckable(True)
+        self.bullet_btn = themed("format-list-unordered", "Bullet list")
+        self.bullet_btn.setCheckable(False)
+        self.numbered_btn = themed("format-list-ordered", "Numbered list")
+        self.numbered_btn.setCheckable(False)
+        self.quote_btn = themed("format-quote", "Quote")
+        self.quote_btn.setCheckable(False)
+        self.code_inline_btn = themed("insert-text", "Inline code")
+        self.code_inline_btn.setCheckable(False)
+        self.code_block_btn = themed("code-context", "Code block")
+        self.code_block_btn.setCheckable(False)
+        self.link_btn = themed("insert-link", "Link")
+        self.link_btn.setCheckable(False)
+        self.image_btn = themed("insert-image", "Image")
+        self.image_btn.setCheckable(False)
+        self.hr_btn = themed("insert-horizontal-rule", "Horizontal rule")
+        self.hr_btn.setCheckable(False)
+        # preview toggle
+        self.preview_btn = themed("view-preview", "Preview")
+        self.preview_btn.setCheckable(True)
+        # prevent toolbar buttons from grabbing focus when clicked
+        for btn in (
+            self.bold_btn,
+            self.italic_btn,
+            self.heading_btn,
+            self.bullet_btn,
+            self.numbered_btn,
+            self.quote_btn,
+            self.code_inline_btn,
+            self.code_block_btn,
+            self.link_btn,
+            self.image_btn,
+            self.hr_btn,
+            self.preview_btn,
+        ):
+            btn.setFocusPolicy(Qt.NoFocus)
+        for btn in (
+            self.bold_btn,
+            self.italic_btn,
+            self.heading_btn,
+            self.bullet_btn,
+            self.numbered_btn,
+            self.quote_btn,
+            self.code_inline_btn,
+            self.code_block_btn,
+            self.link_btn,
+            self.image_btn,
+            self.hr_btn,
+            self.preview_btn,
+        ):
+            hl2.addWidget(btn)
+
+        layout.addLayout(hl2)
+
+        # markdown editor widget
+        self.markdown_editor = MarkdownEditor()
+        layout.addWidget(self.markdown_editor)
+        # compatibility alias used elsewhere
+        self.editor_text = self.markdown_editor
 
         page.setLayout(layout)
 
-        # signal connections
+        # signal connections for file ops
         self.open_btn.clicked.connect(self._open_file_editor)
         self.save_btn.clicked.connect(self._save_file_editor)
         self.encrypt_btn.clicked.connect(self._encrypt_editor)
@@ -373,6 +612,55 @@ class MainWindow(QWidget):
         self.verify_btn.clicked.connect(self._verify_editor)
         self.insert_pub_btn.clicked.connect(self._insert_pubkey)
         self.extract_pub_btn.clicked.connect(self._extract_pubkey)
+        # markdown formatting signals
+        self.bold_btn.clicked.connect(self._format_bold)
+        self.italic_btn.clicked.connect(self._format_italic)
+        self.heading_btn.clicked.connect(self._format_heading)
+        self.bullet_btn.clicked.connect(self._format_bullet)
+        self.numbered_btn.clicked.connect(self._format_numbered)
+        self.quote_btn.clicked.connect(self._format_quote)
+        self.code_inline_btn.clicked.connect(self._format_code_inline)
+        self.code_block_btn.clicked.connect(self._format_code_block)
+        self.link_btn.clicked.connect(self._insert_link)
+        self.image_btn.clicked.connect(self._insert_image)
+        self.hr_btn.clicked.connect(self._insert_hr)
+        self.preview_btn.clicked.connect(self._toggle_preview)
+
+        # maintain raw-mode heading flag used when typing
+        self._raw_heading_mode = False
+        # maintain preview-mode heading flag so new paragraphs inherit style
+        self._preview_heading_mode = False
+        # keep bold/italic/heading state in sync with cursor
+        def connect_cursor_signals(widget):
+            widget.cursorPositionChanged.connect(self._update_format_buttons)
+        self.editor_text.editor.cursorPositionChanged.connect(self._update_format_buttons)
+        self.editor_text.preview.cursorPositionChanged.connect(self._update_format_buttons)
+        # raw editor newline insertion handler
+        self.editor_text.editor.textChanged.connect(self._on_raw_text_changed)
+        # preview text change handler to enforce heading mode on text changes
+        self.editor_text.preview.textChanged.connect(self._on_preview_text_changed)
+        # install filter to intercept Enter and create heading blocks when needed
+        from PySide6.QtCore import QObject, QEvent, QTimer
+        class _PreviewFilter(QObject):
+            def __init__(self, parent):
+                super().__init__(parent)
+                self.win = parent
+            def eventFilter(self, obj, ev):
+                if ev.type() == QEvent.KeyPress and ev.key() == Qt.Key_Return:
+                    if getattr(self.win, '_preview_heading_mode', False):
+                        cursor = obj.textCursor()
+                        # insert new block and apply heading format immediately
+                        cursor.insertBlock()
+                        block_fmt = cursor.blockFormat()
+                        block_fmt.setHeadingLevel(1)
+                        cursor.mergeBlockFormat(block_fmt)
+                        fmt = cursor.charFormat()
+                        fmt.setFontPointSize(24)
+                        cursor.mergeCharFormat(fmt)
+                        obj.setTextCursor(cursor)
+                        return True
+                return False
+        self.editor_text.preview.installEventFilter(_PreviewFilter(self))
         return page
 
     # ------------------------------------------------------------------
@@ -652,6 +940,418 @@ class MainWindow(QWidget):
             QMessageBox.information(self, "Save pubkey", f"wrote {dest}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"failed to save public key: {e}")
+
+    # ------------------------------------------------------------------
+    # markdown formatting helpers
+    # ------------------------------------------------------------------
+
+    def _refresh_if_needed(self):
+        """If the editor is currently showing a preview, regenerate it."""
+        if isinstance(self.editor_text, MarkdownEditor) and self.editor_text._is_preview:
+            self.editor_text.refresh_preview()
+
+    def _prepare_for_formatting(self):
+        """When preview is active convert its HTML back to markdown.
+
+        After calling this the plain-text editor holds the up‑to‑date markdown
+        content which formatting helpers can operate on; the preview will be
+        regenerated later by ``_refresh_if_needed``.
+        """
+        if isinstance(self.editor_text, MarkdownEditor) and self.editor_text._is_preview:
+            md = self.editor_text._to_markdown(self.editor_text.preview.toHtml())
+            self.editor_text.editor.setPlainText(md)
+
+    def _wrap_selection(self, before: str, after: str | None = None) -> None:
+        if after is None:
+            after = before
+        # ensure we're working with markdown if preview mode was active
+        self._prepare_for_formatting()
+        te = self.editor_text.editor if isinstance(self.editor_text, MarkdownEditor) else self.editor_text
+        cursor = te.textCursor()
+        if cursor.hasSelection():
+            selected = cursor.selectedText()
+            cursor.insertText(f"{before}{selected}{after}")
+        else:
+            cursor.insertText(f"{before}{after}")
+            # position cursor between markers
+            pos = cursor.position()
+            cursor.setPosition(pos - len(after))
+            te.setTextCursor(cursor)
+        self._refresh_if_needed()
+
+    def _prefix_lines(self, prefix_func):
+        self._prepare_for_formatting()
+        te = self.editor_text.editor if isinstance(self.editor_text, MarkdownEditor) else self.editor_text
+        cursor = te.textCursor()
+        if not cursor.hasSelection():
+            cursor.select(QTextCursor.LineUnderCursor)
+        text = cursor.selectedText()
+        lines = text.splitlines()
+        new_lines = []
+        for i, line in enumerate(lines):
+            new_lines.append(prefix_func(line, i))
+        cursor.insertText("\n".join(new_lines))
+        self._refresh_if_needed()
+
+    def _format_bold(self):
+        # in preview mode, toggle bold formatting
+        if isinstance(self.editor_text, MarkdownEditor) and self.editor_text._is_preview:
+            te = self.editor_text.preview
+            cursor = te.textCursor()
+            if cursor.hasSelection():
+                fmt = cursor.charFormat()
+                if fmt.fontWeight() == QFont.Bold:
+                    fmt.setFontWeight(QFont.Normal)
+                    self.bold_btn.setChecked(False)
+                else:
+                    fmt.setFontWeight(QFont.Bold)
+                    self.bold_btn.setChecked(True)
+                cursor.mergeCharFormat(fmt)
+            else:
+                # change default weight for new text
+                current = te.fontWeight()
+                newweight = QFont.Normal if current == QFont.Bold else QFont.Bold
+                te.setFontWeight(newweight)
+                self.bold_btn.setChecked(newweight == QFont.Bold)
+            te.setFocus()
+            return
+        self._wrap_selection("**")
+        # after raw-formatting bring focus back to editor
+        self.editor_text.editor.setFocus()
+
+    def _format_italic(self):
+        if isinstance(self.editor_text, MarkdownEditor) and self.editor_text._is_preview:
+            te = self.editor_text.preview
+            cursor = te.textCursor()
+            if cursor.hasSelection():
+                fmt = cursor.charFormat()
+                italic = not fmt.fontItalic()
+                fmt.setFontItalic(italic)
+                cursor.mergeCharFormat(fmt)
+                self.italic_btn.setChecked(italic)
+            else:
+                newval = not te.fontItalic()
+                te.setFontItalic(newval)
+                self.italic_btn.setChecked(newval)
+            te.setFocus()
+            return
+        self._wrap_selection("*")
+        self.editor_text.editor.setFocus()
+
+    def _format_heading(self):
+        if isinstance(self.editor_text, MarkdownEditor) and self.editor_text._is_preview:
+            te = self.editor_text.preview
+            cursor = te.textCursor()
+            block_fmt = cursor.blockFormat()
+            current = block_fmt.headingLevel()
+            if current == 1:
+                # turning off heading
+                block_fmt.setHeadingLevel(0)
+                self.heading_btn.setChecked(False)
+                self._preview_heading_mode = False
+                cursor.mergeBlockFormat(block_fmt)
+                # reset char size for entire block
+                fmt = cursor.charFormat()
+                fmt.setFontPointSize(0)
+                cursor.select(QTextCursor.BlockUnderCursor)
+                cursor.mergeCharFormat(fmt)
+            else:
+                # enabling heading
+                block_fmt.setHeadingLevel(1)
+                self.heading_btn.setChecked(True)
+                self._preview_heading_mode = True
+                cursor.mergeBlockFormat(block_fmt)
+                # enlarge text in block
+                fmt = cursor.charFormat()
+                fmt.setFontPointSize(24)
+                cursor.select(QTextCursor.BlockUnderCursor)
+                cursor.mergeCharFormat(fmt)
+            te.setTextCursor(cursor)
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: te.setFocus())
+            return
+        # raw markdown mode: toggle heading prefix mode
+        te = self.editor_text.editor
+        self._raw_heading_mode = not getattr(self, '_raw_heading_mode', False)
+        self.heading_btn.setChecked(self._raw_heading_mode)
+        cursor = te.textCursor()
+        cursor.select(QTextCursor.LineUnderCursor)
+        text = cursor.selectedText()
+        if self._raw_heading_mode:
+            if not text.startswith("#"):
+                cursor.insertText("# " + text)
+        else:
+            # remove leading hashes/spaces
+            newtext = text.lstrip("# ")
+            cursor.insertText(newtext)
+        te.setTextCursor(cursor)
+        te.setFocus()
+
+    def _format_bullet(self):
+        if isinstance(self.editor_text, MarkdownEditor) and self.editor_text._is_preview:
+            from PySide6.QtGui import QTextListFormat
+            te = self.editor_text.preview
+            cursor = te.textCursor()
+            fmt = QTextListFormat()
+            fmt.setStyle(QTextListFormat.ListDisc)
+            cursor.createList(fmt)
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: te.setFocus())
+            return
+        def bullet(line, idx):
+            return "- " + line.lstrip("- ")
+        self._prefix_lines(bullet)
+
+    def _format_numbered(self):
+        if isinstance(self.editor_text, MarkdownEditor) and self.editor_text._is_preview:
+            from PySide6.QtGui import QTextListFormat
+            te = self.editor_text.preview
+            cursor = te.textCursor()
+            fmt = QTextListFormat()
+            fmt.setStyle(QTextListFormat.ListDecimal)
+            cursor.createList(fmt)
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: te.setFocus())
+            return
+        def num(line, idx):
+            return f"{idx+1}. " + line.lstrip("0123456789. ")
+        self._prefix_lines(num)
+
+
+    def _format_quote(self):
+        if isinstance(self.editor_text, MarkdownEditor) and self.editor_text._is_preview:
+            te = self.editor_text.preview
+            cursor = te.textCursor()
+            cursor.insertHtml("<blockquote></blockquote>")
+            return
+        def quote(line, idx):
+            return "> " + line
+        self._prefix_lines(quote)
+
+    def _format_code_inline(self):
+        if isinstance(self.editor_text, MarkdownEditor) and self.editor_text._is_preview:
+            te = self.editor_text.preview
+            cursor = te.textCursor()
+            if cursor.hasSelection():
+                sel = cursor.selectedText()
+                cursor.insertHtml(f"<code>{sel}</code>")
+            else:
+                cursor.insertHtml("<code></code>")
+                pos = cursor.position()
+                cursor.setPosition(pos - 7)
+                te.setTextCursor(cursor)
+            return
+        self._wrap_selection("`")
+
+    def _format_code_block(self):
+        if isinstance(self.editor_text, MarkdownEditor) and self.editor_text._is_preview:
+            te = self.editor_text.preview
+            cursor = te.textCursor()
+            cursor.insertHtml("<pre><code></code></pre>")
+            return
+        te = self.editor_text.editor if isinstance(self.editor_text, MarkdownEditor) else self.editor_text
+        cursor = te.textCursor()
+        lang, ok = QInputDialog.getText(self, "Code block", "Language (optional):")
+        if not ok:
+            return
+        lang = lang.strip()
+        if cursor.hasSelection():
+            sel = cursor.selectedText()
+            block = f"```{lang}\n{sel}\n```"
+            cursor.insertText(block)
+        else:
+            block = f"```{lang}\n\n```"
+            cursor.insertText(block)
+            # put cursor between the newlines
+            pos = cursor.position()
+            cursor.setPosition(pos - 4)  # before the closing ```
+            te.setTextCursor(cursor)
+        self._refresh_if_needed()
+
+    def _insert_link(self):
+        if isinstance(self.editor_text, MarkdownEditor) and self.editor_text._is_preview:
+            te = self.editor_text.preview
+            cursor = te.textCursor()
+            default = cursor.selectedText() or ""
+            text, ok1 = QInputDialog.getText(self, "Link text", "Text:", text=default)
+            if not ok1:
+                te.setFocus()
+                return
+            url, ok2 = QInputDialog.getText(self, "Link URL", "URL:")
+            if not ok2 or not url:
+                te.setFocus()
+                return
+            cursor.insertHtml(f"<a href=\"{url}\">{text or url}</a>")
+            te.setFocus()
+            return
+        te = self.editor_text.editor if isinstance(self.editor_text, MarkdownEditor) else self.editor_text
+        cursor = te.textCursor()
+        selected = cursor.selectedText()
+        default = selected or ""
+        text, ok1 = QInputDialog.getText(self, "Link text", "Text:", text=default)
+        if not ok1:
+            te.setFocus()
+            return
+        url, ok = QInputDialog.getText(self, "Link URL", "URL:")
+        if not ok or not url:
+            te.setFocus()
+            return
+        cursor.insertText(f"[{text or url}]({url})")
+        self._refresh_if_needed()
+        te.setFocus()
+        if isinstance(self.editor_text, MarkdownEditor) and self.editor_text._is_preview:
+            te = self.editor_text.preview
+            cursor = te.textCursor()
+            text = cursor.selectedText() or "text"
+            url, ok = QInputDialog.getText(self, "Link", "URL:")
+            if not ok or not url:
+                return
+            cursor.insertHtml(f"<a href=\"{url}\">{text}</a>")
+            return
+        te = self.editor_text.editor if isinstance(self.editor_text, MarkdownEditor) else self.editor_text
+        cursor = te.textCursor()
+        selected = cursor.selectedText()
+        text = selected or "text"
+        url, ok = QInputDialog.getText(self, "Link", "URL:")
+        if not ok or not url:
+            return
+        cursor.insertText(f"[{text}]({url})")
+        self._refresh_if_needed()
+
+    def _insert_image(self):
+        if isinstance(self.editor_text, MarkdownEditor) and self.editor_text._is_preview:
+            te = self.editor_text.preview
+            cursor = te.textCursor()
+            alt, ok1 = QInputDialog.getText(self, "Image", "Alt text:")
+            if not ok1:
+                te.setFocus()
+                return
+            url, ok2 = QInputDialog.getText(self, "Image", "URL:")
+            if not ok2 or not url:
+                te.setFocus()
+                return
+            cursor.insertHtml(f"<img src=\"{url}\" alt=\"{alt}\" />")
+            te.setFocus()
+            return
+        te = self.editor_text.editor if isinstance(self.editor_text, MarkdownEditor) else self.editor_text
+        cursor = te.textCursor()
+        alt, ok1 = QInputDialog.getText(self, "Image", "Alt text:")
+        if not ok1:
+            te.setFocus()
+            return
+        url, ok2 = QInputDialog.getText(self, "Image", "URL:")
+        if not ok2 or not url:
+            te.setFocus()
+            return
+        cursor.insertText(f"![{alt}]({url})")
+        self._refresh_if_needed()
+        te.setFocus()
+        if isinstance(self.editor_text, MarkdownEditor) and self.editor_text._is_preview:
+            te = self.editor_text.preview
+            cursor = te.textCursor()
+            alt, ok1 = QInputDialog.getText(self, "Image", "Alt text:")
+            if not ok1:
+                return
+            url, ok2 = QInputDialog.getText(self, "Image", "URL:")
+            if not ok2 or not url:
+                return
+            cursor.insertHtml(f"<img src=\"{url}\" alt=\"{alt}\" />")
+            return
+        te = self.editor_text.editor if isinstance(self.editor_text, MarkdownEditor) else self.editor_text
+        cursor = te.textCursor()
+        alt, ok1 = QInputDialog.getText(self, "Image", "Alt text:")
+        if not ok1:
+            return
+        url, ok2 = QInputDialog.getText(self, "Image", "URL:")
+        if not ok2 or not url:
+            return
+        cursor.insertText(f"![{alt}]({url})")
+        self._refresh_if_needed()
+
+    def _insert_hr(self):
+        if isinstance(self.editor_text, MarkdownEditor) and self.editor_text._is_preview:
+            te = self.editor_text.preview
+            cursor = te.textCursor()
+            cursor.insertHtml("<hr/>")
+            te.setFocus()
+            return
+        te = self.editor_text.editor if isinstance(self.editor_text, MarkdownEditor) else self.editor_text
+        cursor = te.textCursor()
+        cursor.insertText("\n---\n")
+        self._refresh_if_needed()
+        te.setFocus()
+
+    def _update_format_buttons(self):
+        """Synchronize bold/italic/heading button states with current cursor."""
+        te = self.editor_text.preview if (
+            isinstance(self.editor_text, MarkdownEditor) and self.editor_text._is_preview
+        ) else self.editor_text.editor if isinstance(self.editor_text, MarkdownEditor) else self.editor_text
+        cursor = te.textCursor()
+        fmt = cursor.charFormat()
+        self.bold_btn.setChecked(fmt.fontWeight() == QFont.Bold)
+        self.italic_btn.setChecked(fmt.fontItalic())
+        # heading detection via block format when in preview
+        if isinstance(self.editor_text, MarkdownEditor) and self.editor_text._is_preview:
+            block_fmt = cursor.blockFormat()
+            self.heading_btn.setChecked(block_fmt.headingLevel() == 1)
+        else:
+            # in raw mode reflect toggled state
+            self.heading_btn.setChecked(self._raw_heading_mode)
+
+    def _on_raw_text_changed(self):
+        """Auto-prefix new lines with ``# `` if raw heading mode is active."""
+        if not getattr(self, "_raw_heading_mode", False):
+            return
+        te = self.editor_text.editor
+        # quick check: last char of document
+        txt = te.toPlainText()
+        if not txt or not txt.endswith("\n"):
+            return
+        # insert prefix at cursor position
+        cursor = te.textCursor()
+        cursor.insertText("# ")
+        te.setTextCursor(cursor)
+
+    def _on_preview_text_changed(self):
+        """Ensure new paragraphs inherit heading style when preview heading mode is on."""
+        if hasattr(self, '_suppress_preview_change') and self._suppress_preview_change:
+            return
+        if not getattr(self, "_preview_heading_mode", False):
+            return
+        te = self.editor_text.preview
+        txt = te.toPlainText()
+        if not txt or not txt.endswith("\n"):
+            return
+        # apply heading block and char format to current (new) block without reentering
+        self._suppress_preview_change = True
+        try:
+            cursor = te.textCursor()
+            block_fmt = cursor.blockFormat()
+            block_fmt.setHeadingLevel(1)
+            cursor.mergeBlockFormat(block_fmt)
+            # adjust char size as well
+            fmt = cursor.charFormat()
+            fmt.setFontPointSize(24)
+            cursor.mergeCharFormat(fmt)
+            te.setTextCursor(cursor)
+        finally:
+            self._suppress_preview_change = False
+
+    def _toggle_preview(self):
+        if isinstance(self.editor_text, MarkdownEditor):
+            self.editor_text.toggle_preview()
+            # update button label/checked state
+            if self.editor_text._is_preview:
+                self.preview_btn.setText("Raw")
+                self.preview_btn.setChecked(True)
+                # defer focus until after toggle completed
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(0, lambda: self.editor_text.preview.setFocus())
+            else:
+                self.preview_btn.setText("Preview")
+                self.preview_btn.setChecked(False)
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(0, lambda: self.editor_text.editor.setFocus())
 
 
     def _choose_pubkey_file(self, allow_blank: bool = False) -> str | None:

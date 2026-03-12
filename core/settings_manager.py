@@ -19,7 +19,7 @@ class SettingsManager:
 
         self.data = {
             "theme": "dark",
-            "language": "es",
+            "language": "en",
             "accent_color": "#00aaff",
             "reader_preference": None,
         }
@@ -37,7 +37,7 @@ class SettingsManager:
                     if k in loaded:
                         self.data[k] = loaded[k]
             except Exception:
-                print("Settings corruptos, usando defaults.")
+                print("Settings corrupted, using defaults.")
 
     def save(self):
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -49,7 +49,7 @@ class SettingsManager:
             self.data["theme"] = "dark"
 
         if self.data.get("language") not in self.available_langs:
-            self.data["language"] = "es"
+            self.data["language"] = "en"
 
     def get(self, key, default=None):
         return self.data.get(key, default)

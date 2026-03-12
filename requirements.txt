@@ -2,3 +2,5 @@ pyscard
 PySide6
 cryptography
 PyNaCl
+markdown
+html2text
